@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Transit Finder | Commute Planner</title>
+    <meta
+      name="description"
+      content="Find the fastest commute home or to work with place autocomplete and transit route search."
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"
+    />
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="header">
+        <div class="header-inner">
+          <div>
+            <p class="eyebrow">Seoul Metro Commute</p>
+            <h1>Find the fastest trip for work and home</h1>
+          </div>
+          <div class="header-meta">
+            <span id="currentTime"></span>
+            <span class="status-pill" id="serviceStatus">Loading service</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="search-panel glass">
+          <div class="panel-head">
+            <div>
+              <p class="section-label">Route Search</p>
+              <h2>Confirm both origin and destination</h2>
+            </div>
+            <p class="panel-copy">Destination must be selected from the autocomplete list before search.</p>
+          </div>
+
+          <div class="quick-saved" id="savedPlaces"></div>
+
+          <div class="field-grid">
+            <div class="field-block" data-field="origin">
+              <div class="field-label-row">
+                <label class="field-label" for="originInput">Origin</label>
+                <button class="ghost-button" id="btnUseGps" type="button">Use current location</button>
+              </div>
+              <div class="input-shell">
+                <input
+                  id="originInput"
+                  class="search-input"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="Search or use current location"
+                />
+                <button class="icon-button" id="btnOriginClear" type="button" aria-label="Clear origin">x</button>
+              </div>
+              <div class="field-meta">
+                <p class="field-hint" id="originHint">Loading current position.</p>
+                <span class="field-badge" id="originBadge">Pending</span>
+              </div>
+              <ul class="autocomplete-list" id="originAutocomplete" role="listbox"></ul>
+            </div>
+
+            <div class="swap-column">
+              <button class="swap-button" id="btnSwap" type="button" aria-label="Swap origin and destination">↕</button>
+            </div>
+
+            <div class="field-block" data-field="destination">
+              <div class="field-label-row">
+                <label class="field-label" for="destInput">Destination</label>
+                <div class="destination-actions">
+                  <button class="ghost-button" id="btnSaveHome" type="button">Save as Home</button>
+                  <button class="ghost-button" id="btnSaveOffice" type="button">Save as Office</button>
+                </div>
+              </div>
+              <div class="input-shell">
+                <input
+                  id="destInput"
+                  class="search-input"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="Type home, office, station, or landmark"
+                />
+                <button class="icon-button" id="btnDestClear" type="button" aria-label="Clear destination">x</button>
+              </div>
+              <div class="field-meta">
+                <p class="field-hint" id="destHint">Choose one of the suggested places.</p>
+                <span class="field-badge" id="destBadge">Pending</span>
+              </div>
+              <ul class="autocomplete-list" id="destAutocomplete" role="listbox"></ul>
+            </div>
+          </div>
+
+          <div class="time-row">
+            <div>
+              <p class="section-label">Departure Time</p>
+              <div class="time-controls">
+                <button class="time-button active" id="btnNow" type="button">Leave now</button>
+                <input id="timeInput" class="time-input" type="datetime-local" />
+              </div>
+            </div>
+            <button class="primary-button" id="btnSearch" type="button" disabled>Find fastest route</button>
+          </div>
+
+          <p class="message-line" id="searchMessage">Confirm both places to start route search.</p>
+        </section>
+
+        <section class="map-panel">
+          <div class="map-card glass">
+            <div class="map-head">
+              <div>
+                <p class="section-label">Map</p>
+                <h2>Transit overview</h2>
+              </div>
+              <p class="map-summary" id="mapSummary">No route selected yet.</p>
+            </div>
+            <div id="map" class="map-surface"></div>
+          </div>
+        </section>
+
+        <section class="results-panel">
+          <div class="results-head">
+            <div>
+              <p class="section-label">Recommended Routes</p>
+              <h2>Compare by speed, transfers, and walking</h2>
+            </div>
+            <div class="sort-group">
+              <button class="sort-button active" type="button" data-sort="time">Fastest</button>
+              <button class="sort-button" type="button" data-sort="transfer">Fewest transfers</button>
+              <button class="sort-button" type="button" data-sort="walk">Least walking</button>
+            </div>
+          </div>
+          <div class="empty-results glass" id="emptyState">
+            <h3>No commute routes loaded yet</h3>
+            <p>Select a destination and run a search to compare the best transit options.</p>
+          </div>
+          <div class="results-list" id="resultsList"></div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
