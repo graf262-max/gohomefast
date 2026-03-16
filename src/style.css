@@ -202,6 +202,10 @@ button {
   position: relative;
 }
 
+.field-block.dropdown-open {
+  z-index: 50;
+}
+
 .field-label-row,
 .field-meta,
 .route-top,
@@ -301,6 +305,8 @@ button {
 
 .autocomplete-item {
   cursor: pointer;
+  position: relative;
+  z-index: 1;
 }
 
 .autocomplete-item.active,

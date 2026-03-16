@@ -358,6 +358,7 @@ function renderField(fieldName) {
   const badge = fieldName === 'origin' ? dom.originBadge : dom.destBadge;
   const autocomplete = fieldName === 'origin' ? dom.originAutocomplete : dom.destAutocomplete;
   const clearButton = fieldName === 'origin' ? dom.btnOriginClear : dom.btnDestClear;
+  const fieldBlock = input.closest('.field-block');
 
   input.value = field.query;
   hint.textContent = field.helperText;
@@ -367,13 +368,22 @@ function renderField(fieldName) {
 
   autocomplete.innerHTML = buildAutocomplete(fieldName);
   autocomplete.classList.toggle('open', ['suggesting', 'loading', 'empty', 'error'].includes(field.status) && !field.place && !!field.query);
+  fieldBlock?.classList.toggle('dropdown-open', autocomplete.classList.contains('open'));
 
   autocomplete.querySelectorAll('[data-index]').forEach((node) => {
     node.addEventListener('mouseenter', () => {
       field.activeIndex = Number(node.dataset.index);
       renderField(fieldName);
     });
-    node.addEventListener('click', () => {
+    node.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const place = field.suggestions[Number(node.dataset.index)];
+      selectPlace(fieldName, place);
+    });
+    node.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       const place = field.suggestions[Number(node.dataset.index)];
       selectPlace(fieldName, place);
     });

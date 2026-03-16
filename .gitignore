@@ -2,6 +2,7 @@ node_modules
 dist
 build
 netlify-build
+netlify-build-fix
 tempdist
 .DS_Store
 *.local
