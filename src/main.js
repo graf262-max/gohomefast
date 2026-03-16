@@ -1,5 +1,5 @@
 import './style.css';
-import { getAppMeta, reverseGeocode, searchPlaces, searchTransitRoutes } from './api.js';
+import { getAppMeta, hasTransitApiKey, reverseGeocode, searchPlaces, searchTransitRoutes } from './api.js';
 import { getCurrentPosition } from './geo.js';
 import { createTransitMap } from './map.js';
 import { loadSavedPlaces, saveSavedPlace } from './storage.js';
@@ -20,46 +20,47 @@ const $ = (selector) => document.querySelector(selector);
 const COPY = {
   originLoading: '출발지를 불러오는 중입니다.',
   destIdle: '도착지를 입력하면 추천 장소가 나타납니다.',
-  readyToSearch: '출발지와 도착지를 확정하면 경로를 계산할 수 있습니다.',
-  apiOffline: 'API 서버에 연결하지 못했습니다. Node 서버 실행 여부를 확인해 주세요.',
+  readyToSearch: '출발지와 도착지를 모두 확정하면 경로를 찾을 수 있습니다.',
+  apiOffline: '장소 검색 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
   liveMode: '실시간 API 연결',
   demoMode: '데모 모드',
-  gpsLoading: '현재 위치를 불러오는 중입니다.',
-  fallbackOrigin: '서울시청 (기본 출발지)',
+  gpsLoading: '현재 위치를 확인하는 중입니다.',
+  fallbackOrigin: '서울시청',
   currentOrigin: '현재 위치',
   fallbackOriginHint: '위치 권한이 없어 서울시청을 기본 출발지로 사용합니다.',
   originSelected: '현재 위치를 출발지로 설정했습니다.',
   originReselect: '출발지를 다시 선택해 주세요.',
   destReselect: '도착지를 자동완성 목록에서 다시 선택해 주세요.',
   loadingPlaces: '장소 후보를 불러오는 중입니다.',
-  selectFromList: '목록에서 원하는 장소를 선택해 확정하세요.',
+  selectFromList: '목록에서 원하는 장소를 선택해 확정해 주세요.',
   noPlaces: '검색 결과가 없습니다. 다른 키워드로 다시 시도해 주세요.',
-  placeSearchError: '검색 중 오류가 발생했습니다.',
-  enterHint: 'Enter 대신 목록에서 원하는 장소를 선택해 주세요.',
-  originEmpty: '현재 위치를 불러오거나 출발지를 입력하세요.',
+  placeSearchError: '장소 검색 중 오류가 발생했습니다.',
+  enterHint: 'Enter 대신 목록에서 장소를 선택해 주세요.',
+  originEmpty: '현재 위치를 불러오거나 출발지를 입력해 주세요.',
   destEmpty: '도착지를 자동완성 목록에서 선택해 주세요.',
-  swapWarning: '출발지와 도착지가 모두 확정되어 있을 때만 서로 바꿀 수 있습니다.',
+  swapWarning: '출발지와 도착지가 모두 확정되어야 서로 바꿀 수 있습니다.',
   swapped: '출발지와 도착지를 서로 바꿨습니다.',
   saveFirst: '먼저 도착지를 선택한 뒤 저장해 주세요.',
   savedHome: '현재 도착지를 집으로 저장했습니다.',
   savedOffice: '현재 도착지를 회사로 저장했습니다.',
-  loadedHome: '집을 도착지로 불러왔습니다.',
-  loadedOffice: '회사를 도착지로 불러왔습니다.',
+  loadedHome: '저장된 집을 도착지로 불러왔습니다.',
+  loadedOffice: '저장된 회사를 도착지로 불러왔습니다.',
   mustConfirmDestination: '도착지는 자동완성 목록에서 선택해야 확정됩니다.',
   needBothPlaces: '출발지와 도착지를 모두 확정해 주세요.',
-  searchingRoutes: '대중교통 경로를 불러오는 중입니다.',
+  transitKeyMissing: 'ODSAY 키가 설정되지 않았습니다. VITE_ODSAY_API_KEY를 확인해 주세요.',
+  searchingRoutes: '대중교통 경로를 계산하는 중입니다.',
   searchFailed: '경로 조회에 실패했습니다.',
   noRouteYet: '아직 선택된 경로가 없습니다.',
   foundRoutes: (count) => `${count}개의 추천 경로를 찾았습니다.`,
   noRoutes: '조건에 맞는 경로를 찾지 못했습니다.',
-  loadingRoutes: '경로를 계산하는 중입니다...',
-  confirmed: '확정됨',
+  loadingRoutes: '경로를 불러오는 중입니다...',
+  confirmed: '확정',
   searching: '검색 중',
   notConfirmed: '미확정',
   noAddress: '주소 정보 없음',
   demoPlace: '데모',
   realPlace: '장소',
-  noDetails: '세부 정보 없음',
+  noDetails: '상세 정보 없음',
   fastestRoute: '가장 빠른 경로',
   suggestedRoute: '추천 경로',
 };
@@ -200,8 +201,9 @@ function renderClock() {
 }
 
 function updateServiceStatus() {
-  dom.serviceStatus.textContent = state.meta.demoMode ? COPY.demoMode : COPY.liveMode;
-  dom.serviceStatus.classList.toggle('demo', state.meta.demoMode);
+  const isLive = !state.meta.demoMode && hasTransitApiKey();
+  dom.serviceStatus.textContent = isLive ? COPY.liveMode : COPY.demoMode;
+  dom.serviceStatus.classList.toggle('demo', !isLive);
 }
 
 async function loadCurrentLocation() {
@@ -231,7 +233,7 @@ async function loadCurrentLocation() {
     });
     state.fields.origin.helperText = position.isFallback
       ? COPY.fallbackOriginHint
-      : `현재 좌표 (${position.coords.lat.toFixed(4)}, ${position.coords.lng.toFixed(4)})로 설정했습니다.`;
+      : `현재 좌표(${position.coords.lat.toFixed(4)}, ${position.coords.lng.toFixed(4)})를 출발지로 설정했습니다.`;
   }
 
   renderField('origin');
@@ -285,7 +287,7 @@ async function performPlaceSearch(fieldName) {
 
   try {
     const { places, meta } = await searchPlaces(query);
-    state.meta = meta;
+    state.meta = { ...state.meta, ...meta };
     updateServiceStatus();
     field.suggestions = places;
     field.activeIndex = 0;
@@ -521,12 +523,23 @@ function renderSearchState() {
   dom.btnSearch.disabled = !canSearch;
   dom.searchMessage.textContent = state.searchMessage;
 
+  if (!hasTransitApiKey()) {
+    dom.searchMessage.textContent = COPY.transitKeyMissing;
+    return;
+  }
+
   if (!state.fields.destination.place && state.fields.destination.query && state.fields.destination.status !== 'selected') {
     dom.searchMessage.textContent = COPY.mustConfirmDestination;
   }
 }
 
 async function handleSearch() {
+  if (!hasTransitApiKey()) {
+    state.searchMessage = COPY.transitKeyMissing;
+    renderSearchState();
+    return;
+  }
+
   if (!state.fields.origin.place || !state.fields.destination.place) {
     state.searchMessage = COPY.needBothPlaces;
     renderSearchState();
@@ -547,7 +560,7 @@ async function handleSearch() {
       state.departureTime || new Date().toISOString(),
     );
 
-    state.meta = meta;
+    state.meta = { ...state.meta, ...meta };
     state.routes = routes;
     state.selectedRouteId = routes[0]?.id ?? null;
     state.searchMessage = routes.length ? COPY.foundRoutes(routes.length) : COPY.noRoutes;

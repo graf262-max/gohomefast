@@ -9,9 +9,11 @@ export function formatDuration(minutes) {
   if (!Number.isFinite(minutes)) {
     return '-';
   }
+
   if (minutes < 60) {
     return `${minutes}분`;
   }
+
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return remainingMinutes ? `${hours}시간 ${remainingMinutes}분` : `${hours}시간`;
@@ -40,11 +42,13 @@ export function formatFare(fare) {
   if (!fare) {
     return '무료';
   }
+
   return `${Number(fare).toLocaleString('ko-KR')}원`;
 }
 
 export function debounce(fn, delay = 250) {
   let timer;
+
   return (...args) => {
     clearTimeout(timer);
     timer = window.setTimeout(() => fn(...args), delay);
@@ -59,6 +63,7 @@ export function toLocalDateTimeValue(date) {
 
 export function sortRoutes(routes, sortBy) {
   const list = [...routes];
+
   switch (sortBy) {
     case 'transfer':
       return list.sort((a, b) => a.transferCount - b.transferCount || a.totalTime - b.totalTime);
@@ -70,13 +75,29 @@ export function sortRoutes(routes, sortBy) {
   }
 }
 
+export function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 export function highlightMatch(text, query) {
+  const safeText = escapeHtml(text);
+
   if (!query) {
-    return text;
+    return safeText;
   }
-  const index = text.toLowerCase().indexOf(query.toLowerCase());
+
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const index = lowerText.indexOf(lowerQuery);
+
   if (index === -1) {
-    return text;
+    return safeText;
   }
-  return `${text.slice(0, index)}<strong>${text.slice(index, index + query.length)}</strong>${text.slice(index + query.length)}`;
+
+  return `${escapeHtml(text.slice(0, index))}<strong>${escapeHtml(text.slice(index, index + query.length))}</strong>${escapeHtml(text.slice(index + query.length))}`;
 }

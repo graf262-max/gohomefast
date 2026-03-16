@@ -233,9 +233,33 @@ async function odsayTransitRequest({ origin, destination }) {
   return response.json();
 }
 
+function getOdsayErrorMessage(errorPayload) {
+  if (Array.isArray(errorPayload)) {
+    return errorPayload[0]?.message || errorPayload[0]?.msg || null;
+  }
+  return errorPayload?.message || errorPayload?.msg || null;
+}
+
 export function createApp() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ extended: true }));
+  app.use((request, _response, next) => {
+    if (typeof request.body === 'string') {
+      try {
+        request.body = JSON.parse(request.body);
+      } catch {
+        // Keep the raw value if it isn't valid JSON.
+      }
+    } else if (Buffer.isBuffer(request.body)) {
+      try {
+        request.body = JSON.parse(request.body.toString('utf8'));
+      } catch {
+        // Keep the raw value if it isn't valid JSON.
+      }
+    }
+    next();
+  });
 
   app.get('/api/meta', (_request, response) => {
     response.json(getServerMeta());
@@ -361,7 +385,7 @@ export function createApp() {
 
       const data = await odsayTransitRequest({ origin, destination });
       if (data.error) {
-        response.status(502).json({ message: data.error.msg || 'Transit routing failed.' });
+        response.status(502).json({ message: getOdsayErrorMessage(data.error) || 'Transit routing failed.' });
         return;
       }
 
