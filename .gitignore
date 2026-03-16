@@ -1,8 +1,12 @@
 node_modules
 dist
 build
+netlify-build
 tempdist
 .DS_Store
 *.local
 .env
 build-debug.log
+
+# Local Netlify folder
+.netlify
