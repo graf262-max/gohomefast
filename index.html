@@ -36,16 +36,20 @@
               <p class="section-label">Route Search</p>
               <h2>Confirm both origin and destination</h2>
             </div>
-            <p class="panel-copy">Destination must be selected from the autocomplete list before search.</p>
+            <p class="panel-copy">Choose both fields from search or saved places, then compare the fastest transit options.</p>
           </div>
-
-          <div class="quick-saved" id="savedPlaces"></div>
 
           <div class="field-grid">
             <div class="field-block" data-field="origin">
               <div class="field-label-row">
                 <label class="field-label" for="originInput">Origin</label>
-                <button class="ghost-button" id="btnUseGps" type="button">Use current location</button>
+                <div class="field-actions">
+                  <div class="saved-action-group">
+                    <button class="ghost-button" id="btnOriginHome" type="button">Home</button>
+                    <button class="ghost-button" id="btnOriginOffice" type="button">Office</button>
+                  </div>
+                  <button class="ghost-button" id="btnUseGps" type="button">Use current location</button>
+                </div>
               </div>
               <div class="input-shell">
                 <input
@@ -53,12 +57,12 @@
                   class="search-input"
                   type="text"
                   autocomplete="off"
-                  placeholder="Search or use current location"
+                  placeholder="Search origin or use current location"
                 />
                 <button class="icon-button" id="btnOriginClear" type="button" aria-label="Clear origin">x</button>
               </div>
               <div class="field-meta">
-                <p class="field-hint" id="originHint">Loading current position.</p>
+                <p class="field-hint" id="originHint">Search for a place or use your current location.</p>
                 <span class="field-badge" id="originBadge">Pending</span>
               </div>
               <ul class="autocomplete-list" id="originAutocomplete" role="listbox"></ul>
@@ -71,9 +75,15 @@
             <div class="field-block" data-field="destination">
               <div class="field-label-row">
                 <label class="field-label" for="destInput">Destination</label>
-                <div class="destination-actions">
-                  <button class="ghost-button" id="btnSaveHome" type="button">Save as Home</button>
-                  <button class="ghost-button" id="btnSaveOffice" type="button">Save as Office</button>
+                <div class="field-actions">
+                  <div class="saved-action-group">
+                    <button class="ghost-button" id="btnDestHome" type="button">Home</button>
+                    <button class="ghost-button" id="btnDestOffice" type="button">Office</button>
+                  </div>
+                  <div class="saved-action-group">
+                    <button class="ghost-button" id="btnSaveHome" type="button">Save as Home</button>
+                    <button class="ghost-button" id="btnSaveOffice" type="button">Save as Office</button>
+                  </div>
                 </div>
               </div>
               <div class="input-shell">
@@ -135,7 +145,7 @@
           </div>
           <div class="empty-results glass" id="emptyState">
             <h3>No commute routes loaded yet</h3>
-            <p>Select a destination and run a search to compare the best transit options.</p>
+            <p>Select both places and run a search to compare the best transit options.</p>
           </div>
           <div class="results-list" id="resultsList"></div>
         </section>

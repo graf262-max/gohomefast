@@ -29,6 +29,15 @@ function loadKakaoSdk() {
   return scriptPromise;
 }
 
+function createLabelContent(type, title, subtitle) {
+  return `
+    <div class="map-label ${type}">
+      <strong>${title}</strong>
+      <span>${subtitle}</span>
+    </div>
+  `;
+}
+
 export async function createTransitMap(container) {
   const kakao = await loadKakaoSdk();
 
@@ -43,6 +52,8 @@ export async function createTransitMap(container) {
     return {
       setPlaces() {},
       setRouteSummary() {},
+      setSegmentFocus() {},
+      clearSegmentFocus() {},
     };
   }
 
@@ -51,49 +62,72 @@ export async function createTransitMap(container) {
     level: 6,
   });
 
-  const mapObjects = [];
+  const placeObjects = [];
+  const focusObjects = [];
   let routeLine = null;
   let routeOverlay = null;
+  let originPlace = null;
+  let destinationPlace = null;
 
-  function clearObjects() {
-    while (mapObjects.length) {
-      mapObjects.pop().setMap(null);
+  function clearObjectList(list) {
+    while (list.length) {
+      list.pop().setMap(null);
     }
+  }
+
+  function clearRouteLine() {
     if (routeLine) {
       routeLine.setMap(null);
       routeLine = null;
     }
+  }
+
+  function clearRouteOverlay() {
     if (routeOverlay) {
       routeOverlay.setMap(null);
       routeOverlay = null;
     }
   }
 
+  function createOverlay(position, content, list) {
+    const overlay = new kakao.maps.CustomOverlay({
+      position,
+      yAnchor: 1.7,
+      content,
+    });
+    overlay.setMap(map);
+    list.push(overlay);
+  }
+
   function setPlaces(origin, destination) {
-    clearObjects();
+    originPlace = origin;
+    destinationPlace = destination;
+    clearObjectList(placeObjects);
+    clearObjectList(focusObjects);
+    clearRouteLine();
+    clearRouteOverlay();
 
     const places = [origin, destination].filter(Boolean);
+
+    if (!places.length) {
+      map.setCenter(new kakao.maps.LatLng(37.5663, 126.9779));
+      return;
+    }
+
     const bounds = new kakao.maps.LatLngBounds();
 
     places.forEach((place, index) => {
       const position = new kakao.maps.LatLng(place.lat, place.lng);
       const marker = new kakao.maps.Marker({ position, title: place.name });
       marker.setMap(map);
-      mapObjects.push(marker);
+      placeObjects.push(marker);
       bounds.extend(position);
 
-      const label = new kakao.maps.CustomOverlay({
+      createOverlay(
         position,
-        yAnchor: 1.7,
-        content: `
-          <div class="map-label ${index === 0 ? 'origin' : 'destination'}">
-            <strong>${index === 0 ? '출발' : '도착'}</strong>
-            <span>${place.name}</span>
-          </div>
-        `,
-      });
-      label.setMap(map);
-      mapObjects.push(label);
+        createLabelContent(index === 0 ? 'origin' : 'destination', index === 0 ? '출발' : '도착', place.name),
+        placeObjects,
+      );
     });
 
     if (origin && destination) {
@@ -112,16 +146,11 @@ export async function createTransitMap(container) {
       return;
     }
 
-    if (origin) {
-      map.setCenter(new kakao.maps.LatLng(origin.lat, origin.lng));
-    }
+    map.setCenter(new kakao.maps.LatLng(places[0].lat, places[0].lng));
   }
 
   function setRouteSummary(summary, destination) {
-    if (routeOverlay) {
-      routeOverlay.setMap(null);
-      routeOverlay = null;
-    }
+    clearRouteOverlay();
 
     if (!summary || !destination) {
       return;
@@ -140,8 +169,73 @@ export async function createTransitMap(container) {
     routeOverlay.setMap(map);
   }
 
+  function clearSegmentFocus() {
+    clearObjectList(focusObjects);
+  }
+
+  function setSegmentFocus(segment, message) {
+    clearSegmentFocus();
+
+    if (!segment?.startStop || !segment?.endStop) {
+      return;
+    }
+
+    const bounds = new kakao.maps.LatLngBounds();
+    const points = [originPlace, destinationPlace, segment.startStop, segment.endStop].filter(Boolean);
+
+    points.forEach((point) => {
+      if (!Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
+        return;
+      }
+
+      const position = new kakao.maps.LatLng(point.lat, point.lng);
+      bounds.extend(position);
+    });
+
+    const focusStops = [
+      { stop: segment.startStop, type: 'stop-start', title: '승차 정류장' },
+      { stop: segment.endStop, type: 'stop-end', title: '하차 정류장' },
+    ];
+
+    focusStops.forEach(({ stop, type, title }) => {
+      if (!Number.isFinite(stop?.lat) || !Number.isFinite(stop?.lng)) {
+        return;
+      }
+
+      const position = new kakao.maps.LatLng(stop.lat, stop.lng);
+      const marker = new kakao.maps.Marker({ position, title: stop.name });
+      marker.setMap(map);
+      focusObjects.push(marker);
+
+      createOverlay(position, createLabelContent(type, title, stop.name), focusObjects);
+    });
+
+    if (!bounds.isEmpty()) {
+      map.setBounds(bounds, 60, 60, 60, 60);
+    }
+
+    if (!message || !segment.endStop || !Number.isFinite(segment.endStop.lat) || !Number.isFinite(segment.endStop.lng)) {
+      return;
+    }
+
+    clearRouteOverlay();
+    routeOverlay = new kakao.maps.CustomOverlay({
+      position: new kakao.maps.LatLng(segment.endStop.lat, segment.endStop.lng),
+      yAnchor: 0,
+      content: `
+        <div class="route-overlay">
+          <strong>${segment.name}</strong>
+          <span>${message}</span>
+        </div>
+      `,
+    });
+    routeOverlay.setMap(map);
+  }
+
   return {
     setPlaces,
     setRouteSummary,
+    setSegmentFocus,
+    clearSegmentFocus,
   };
 }
