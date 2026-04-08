@@ -1,5 +1,6 @@
 import './style.css';
 import {
+  enrichRoutesWithRealtime,
   getAppMeta,
   hasTransitApiKey,
   resolveBusSegmentStops,
@@ -16,7 +17,9 @@ import {
   formatDateTime,
   formatDuration,
   formatFare,
+  formatMinutesLabel,
   formatTime,
+  getRouteSortTime,
   highlightMatch,
   sortRoutes,
   toLocalDateTimeValue,
@@ -45,8 +48,6 @@ const COPY = {
   noPlaces: '검색 결과가 없습니다. 다른 키워드로 다시 시도해 주세요.',
   placeSearchError: '장소 검색 중 오류가 발생했습니다.',
   enterHint: 'Enter 대신 목록에서 장소를 선택해 주세요.',
-  originEmpty: '출발지를 확정해 주세요.',
-  destEmpty: '도착지를 확정해 주세요.',
   swapWarning: '출발지와 도착지가 모두 확정되어야 서로 바꿀 수 있습니다.',
   swapped: '출발지와 도착지를 서로 바꿨습니다.',
   saveFirst: '먼저 도착지를 선택한 뒤 저장해 주세요.',
@@ -62,6 +63,7 @@ const COPY = {
   needBothPlaces: '출발지와 도착지를 모두 확정해 주세요.',
   transitKeyMissing: 'ODSAY 키가 설정되지 않았습니다. VITE_ODSAY_API_KEY를 확인해 주세요.',
   searchingRoutes: '대중교통 경로를 계산하는 중입니다.',
+  etaLoading: '실시간 버스 도착정보를 반영해 경로를 보정하는 중입니다.',
   searchFailed: '경로 조회에 실패했습니다.',
   noRouteYet: '아직 선택된 경로가 없습니다.',
   foundRoutes: (count) => `${count}개의 추천 경로를 찾았습니다.`,
@@ -81,6 +83,10 @@ const COPY = {
   stopFocusReady: '버스 승차·하차 정류장을 지도에 표시했습니다.',
   stopFocusError: '버스 정류장 위치를 찾지 못했습니다. 경로 정보만 확인해 주세요.',
   stopFocusSummary: (segment) => `${segment.name} 승차·하차 정류장 표시 중`,
+  waitLabel: '대기',
+  realtimeApplied: '실시간 반영',
+  realtimeFallback: '기본 경로',
+  tightConnection: '놓칠 수 있음',
 };
 
 const state = {
@@ -613,11 +619,16 @@ async function handleSearch() {
       state.departureTime || new Date().toISOString(),
     );
 
+    state.searchMessage = COPY.etaLoading;
+    renderSearchState();
+
+    const scoredRoutes = await enrichRoutesWithRealtime(routes);
     state.meta = { ...state.meta, ...meta };
-    state.routes = routes;
-    state.selectedRouteId = routes[0]?.id ?? null;
+    state.routes = scoredRoutes;
+    const defaultRoute = sortRoutes(scoredRoutes, state.sortBy)[0] || scoredRoutes[0] || null;
+    state.selectedRouteId = defaultRoute?.id ?? null;
     state.selectedSegmentId = null;
-    state.searchMessage = routes.length ? COPY.foundRoutes(routes.length) : COPY.noRoutes;
+    state.searchMessage = scoredRoutes.length ? COPY.foundRoutes(scoredRoutes.length) : COPY.noRoutes;
     updateServiceStatus();
   } catch (error) {
     clearRouteResults();
@@ -639,6 +650,20 @@ function clearRouteResults() {
   }
 }
 
+function renderRealtimeMeta(route) {
+  if (!route.realtime) {
+    return `<span>${COPY.realtimeFallback}</span>`;
+  }
+
+  if (route.realtime.status === 'live' || route.realtime.status === 'tight') {
+    const warning = route.realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
+    const leftStation = Number.isFinite(route.realtime.leftStation) ? ` · ${route.realtime.leftStation}정류장 전` : '';
+    return `<span>${COPY.waitLabel} ${formatMinutesLabel(route.realtime.waitMinutes)}</span><span>${COPY.realtimeApplied}${leftStation}${warning}</span>`;
+  }
+
+  return `<span>${COPY.realtimeFallback}</span>`;
+}
+
 function renderRoutes() {
   if (!state.routes.length) {
     dom.resultsList.innerHTML = '';
@@ -658,11 +683,13 @@ function renderRoutes() {
       <div class="route-top">
         <div>
           <p class="route-kicker">${route.id === fastestId ? COPY.fastestRoute : COPY.suggestedRoute}</p>
-          <h3>${formatDuration(route.totalTime)}</h3>
+          <h3>${formatDuration(getRouteSortTime(route))}</h3>
+          ${route.effectiveTotalTime !== route.totalTime ? `<p class="route-base-time">기본 ${formatDuration(route.totalTime)}</p>` : ''}
         </div>
         <div class="route-side">
           <span>환승 ${route.transferCount}회</span>
-          <span>도보 ${route.walkTime}분</span>
+          <span>도보 ${formatMinutesLabel(route.walkTime)}</span>
+          ${renderRealtimeMeta(route)}
           <strong>${formatFare(route.fare)}</strong>
         </div>
       </div>
@@ -671,13 +698,13 @@ function renderRoutes() {
           <button class="segment-pill ${segment.type} ${segment.id === state.selectedSegmentId ? 'active' : ''}" type="button" data-route-id="${route.id}" data-segment-id="${segment.id}">
             <strong>${TRANSPORT_ICONS[segment.type]}</strong>
             <span>${segment.name}</span>
-            <em>${segment.duration}분</em>
+            <em>${formatMinutesLabel(segment.duration)}</em>
           </button>
         `).join('')}
       </div>
       <div class="route-footer">
         <span>${formatTime(route.departureTime)} 출발</span>
-        <span>${formatTime(route.arrivalTime)} 도착</span>
+        <span>${formatTime(route.effectiveArrivalTime || route.arrivalTime)} 도착</span>
       </div>
       <div class="route-details">
         ${route.segments.map((segment) => `
@@ -686,7 +713,7 @@ function renderRoutes() {
               <strong>${segment.name}</strong>
               <p>${segment.detail || COPY.noDetails}</p>
             </div>
-            <span>${segment.duration}분</span>
+            <span>${formatMinutesLabel(segment.duration)}</span>
           </div>
         `).join('')}
       </div>
@@ -719,7 +746,7 @@ function renderRoutes() {
 
   dom.mapSummary.textContent = activeSegment?.type === 'bus'
     ? COPY.stopFocusSummary(activeSegment)
-    : `${formatDuration(selectedRoute.totalTime)} · 환승 ${selectedRoute.transferCount}회 · 도보 ${selectedRoute.walkTime}분`;
+    : `${formatDuration(getRouteSortTime(selectedRoute))} · 환승 ${selectedRoute.transferCount}회 · 도보 ${formatMinutesLabel(selectedRoute.walkTime)}`;
 }
 
 async function focusSegment(routeId, segmentId) {
@@ -788,15 +815,15 @@ function syncMap() {
   state.map.setRouteSummary(
     selectedRoute && state.fields.destination.place
       ? {
-          title: `예상 ${formatDuration(selectedRoute.totalTime)}`,
-          description: `${formatTime(selectedRoute.departureTime)} 출발 · ${formatTime(selectedRoute.arrivalTime)} 도착`,
+          title: `예상 ${formatDuration(getRouteSortTime(selectedRoute))}`,
+          description: `${formatTime(selectedRoute.departureTime)} 출발 · ${formatTime(selectedRoute.effectiveArrivalTime || selectedRoute.arrivalTime)} 도착`,
         }
       : null,
     state.fields.destination.place,
   );
 
   dom.mapSummary.textContent = selectedRoute
-    ? `${formatDuration(selectedRoute.totalTime)} · 환승 ${selectedRoute.transferCount}회 · 도보 ${selectedRoute.walkTime}분`
+    ? `${formatDuration(getRouteSortTime(selectedRoute))} · 환승 ${selectedRoute.transferCount}회 · 도보 ${formatMinutesLabel(selectedRoute.walkTime)}`
     : COPY.noRouteYet;
 }
 

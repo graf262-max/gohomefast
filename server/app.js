@@ -233,6 +233,54 @@ async function odsayTransitRequest({ origin, destination }) {
   return response.json();
 }
 
+async function odsayRealtimeStationRequest({ stationId, routeId }) {
+  const url = new URL('https://api.odsay.com/v1/api/realtimeStation');
+  url.searchParams.set('stationID', String(stationId));
+  if (routeId) {
+    url.searchParams.set('routeIDs', String(routeId));
+  }
+  url.searchParams.set('apiKey', process.env.ODSAY_API_KEY);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`ODsay realtime API request failed (${response.status})`);
+  }
+
+  return response.json();
+}
+
+function normalizeRealtimeArrivals(data) {
+  const candidates = data.result?.real || data.result?.station?.real || data.result?.realtimeArrival || [];
+
+  return candidates.flatMap((item) => {
+    const base = {
+      routeId: item.routeID || item.routeId || item.busID || null,
+      routeName: item.routeNm || item.routeName || item.routeNo || null,
+    };
+    const arrivals = [];
+
+    const firstArrivalSec = Number(item.arrival1?.arrivalSec ?? item.arrivalSec ?? item.arriveSec1);
+    if (Number.isFinite(firstArrivalSec) && firstArrivalSec >= 0) {
+      arrivals.push({
+        ...base,
+        arrivalSec: firstArrivalSec,
+        leftStation: Number(item.arrival1?.leftStation ?? item.leftStation ?? item.leftStation1),
+      });
+    }
+
+    const secondArrivalSec = Number(item.arrival2?.arrivalSec ?? item.arrivalSec2 ?? item.arriveSec2);
+    if (Number.isFinite(secondArrivalSec) && secondArrivalSec >= 0) {
+      arrivals.push({
+        ...base,
+        arrivalSec: secondArrivalSec,
+        leftStation: Number(item.arrival2?.leftStation ?? item.leftStation2),
+      });
+    }
+
+    return arrivals;
+  }).sort((a, b) => a.arrivalSec - b.arrivalSec);
+}
+
 function getOdsayErrorMessage(errorPayload) {
   if (Array.isArray(errorPayload)) {
     return errorPayload[0]?.message || errorPayload[0]?.msg || null;
@@ -356,6 +404,58 @@ export function createApp() {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Reverse geocoding failed.';
+      response.status(502).json({ message });
+    }
+  });
+
+  app.get('/api/bus/realtime', async (request, response) => {
+    const stationId = String(request.query.stationId || '').trim();
+    const routeId = String(request.query.routeId || '').trim();
+
+    if (!stationId) {
+      response.status(400).json({ message: 'stationId is required.' });
+      return;
+    }
+
+    try {
+      if (!process.env.ODSAY_API_KEY) {
+        if (isProduction) {
+          response.status(503).json({ message: 'Realtime bus API key is not configured.' });
+          return;
+        }
+
+        response.json({
+          arrivals: [
+            {
+              routeId: routeId || 'mock-route',
+              routeName: routeId || 'Mock Bus',
+              arrivalSec: 240,
+              leftStation: 3,
+            },
+            {
+              routeId: routeId || 'mock-route',
+              routeName: routeId || 'Mock Bus',
+              arrivalSec: 720,
+              leftStation: 9,
+            },
+          ],
+          meta: getServerMeta(),
+        });
+        return;
+      }
+
+      const data = await odsayRealtimeStationRequest({ stationId, routeId });
+      if (data.error) {
+        response.status(502).json({ message: getOdsayErrorMessage(data.error) || 'Realtime bus lookup failed.' });
+        return;
+      }
+
+      response.json({
+        arrivals: normalizeRealtimeArrivals(data),
+        meta: getServerMeta(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Realtime bus lookup failed.';
       response.status(502).json({ message });
     }
   });

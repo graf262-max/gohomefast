@@ -46,6 +46,14 @@ export function formatFare(fare) {
   return `${Number(fare).toLocaleString('ko-KR')}원`;
 }
 
+export function formatMinutesLabel(minutes) {
+  if (!Number.isFinite(minutes)) {
+    return '-';
+  }
+
+  return `${Math.max(0, Math.round(minutes))}분`;
+}
+
 export function debounce(fn, delay = 250) {
   let timer;
 
@@ -61,17 +69,21 @@ export function toLocalDateTimeValue(date) {
   return new Date(current.getTime() - offset).toISOString().slice(0, 16);
 }
 
+export function getRouteSortTime(route) {
+  return route.effectiveTotalTime ?? route.totalTime;
+}
+
 export function sortRoutes(routes, sortBy) {
   const list = [...routes];
 
   switch (sortBy) {
     case 'transfer':
-      return list.sort((a, b) => a.transferCount - b.transferCount || a.totalTime - b.totalTime);
+      return list.sort((a, b) => a.transferCount - b.transferCount || getRouteSortTime(a) - getRouteSortTime(b));
     case 'walk':
-      return list.sort((a, b) => a.walkTime - b.walkTime || a.totalTime - b.totalTime);
+      return list.sort((a, b) => a.walkTime - b.walkTime || getRouteSortTime(a) - getRouteSortTime(b));
     case 'time':
     default:
-      return list.sort((a, b) => a.totalTime - b.totalTime);
+      return list.sort((a, b) => getRouteSortTime(a) - getRouteSortTime(b));
   }
 }
 
