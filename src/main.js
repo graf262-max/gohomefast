@@ -84,6 +84,7 @@ const COPY = {
   stopFocusError: '버스 정류장 위치를 찾지 못했습니다. 경로 정보만 확인해 주세요.',
   stopFocusSummary: (segment) => `${segment.name} 승차·하차 정류장 표시 중`,
   waitLabel: '대기',
+  busArrivalSoon: (minutes) => `버스 ${formatMinutesLabel(minutes)} 뒤 도착`,
   realtimeApplied: '실시간 반영',
   realtimeFallback: '기본 경로',
   tightConnection: '놓칠 수 있음',
@@ -658,10 +659,19 @@ function renderRealtimeMeta(route) {
   if (route.realtime.status === 'live' || route.realtime.status === 'tight') {
     const warning = route.realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
     const leftStation = Number.isFinite(route.realtime.leftStation) ? ` · ${route.realtime.leftStation}정류장 전` : '';
-    return `<span>${COPY.waitLabel} ${formatMinutesLabel(route.realtime.waitMinutes)}</span><span>${COPY.realtimeApplied}${leftStation}${warning}</span>`;
+    return `<span>${COPY.busArrivalSoon(route.realtime.waitMinutes)}</span><span>${COPY.realtimeApplied}${leftStation}${warning}</span>`;
   }
 
   return `<span>${COPY.realtimeFallback}</span>`;
+}
+
+function renderSegmentEta(route, segment) {
+  if (segment.type !== 'bus' || !route.realtime || route.realtime.segmentId !== segment.id) {
+    return '';
+  }
+
+  const warning = route.realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
+  return `<small class="segment-eta">${COPY.busArrivalSoon(route.realtime.waitMinutes)}${warning}</small>`;
 }
 
 function renderRoutes() {
@@ -697,7 +707,10 @@ function renderRoutes() {
         ${route.segments.map((segment) => `
           <button class="segment-pill ${segment.type} ${segment.id === state.selectedSegmentId ? 'active' : ''}" type="button" data-route-id="${route.id}" data-segment-id="${segment.id}">
             <strong>${TRANSPORT_ICONS[segment.type]}</strong>
-            <span>${segment.name}</span>
+            <span class="segment-copy">
+              <span>${segment.name}</span>
+              ${renderSegmentEta(route, segment)}
+            </span>
             <em>${formatMinutesLabel(segment.duration)}</em>
           </button>
         `).join('')}
