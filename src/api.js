@@ -324,12 +324,25 @@ function pickBestArrival(arrivals, minimumBufferSec) {
   };
 }
 
-async function fetchBusRealtime(stationId, routeId) {
-  if (!stationId || !routeId) {
+async function fetchBusRealtime(stop, routeId) {
+  if (!stop?.stationId || !routeId) {
     return { arrivals: [] };
   }
 
-  return fetchJson(`/api/bus/realtime?stationId=${encodeURIComponent(stationId)}&routeId=${encodeURIComponent(routeId)}`);
+  const params = new URLSearchParams({
+    stationId: String(stop.stationId),
+    routeId: String(routeId),
+  });
+
+  if (stop.localStationId) {
+    params.set('localStationId', String(stop.localStationId));
+  }
+
+  if (stop.arsId) {
+    params.set('arsId', String(stop.arsId));
+  }
+
+  return fetchJson(`/api/bus/realtime?${params.toString()}`);
 }
 
 function getBusSegments(route) {
@@ -339,7 +352,7 @@ function getBusSegments(route) {
 async function enrichBusSegmentRealtime(route, segment) {
   const accessMinutes = getAccessMinutesUntilSegment(route, segment.id);
   const minimumBufferSec = (accessMinutes + MINIMUM_BOARDING_BUFFER_MINUTES) * 60;
-  const realtimeResponse = await fetchBusRealtime(segment.startStop.stationId, segment.routeId);
+  const realtimeResponse = await fetchBusRealtime(segment.startStop, segment.routeId);
   const picked = pickBestArrival(realtimeResponse.arrivals, minimumBufferSec);
 
   if (!picked) {

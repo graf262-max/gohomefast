@@ -249,6 +249,19 @@ async function odsayRealtimeStationRequest({ stationId, routeId }) {
   return response.json();
 }
 
+async function odsayBusStationInfoRequest({ stationId }) {
+  const url = new URL('https://api.odsay.com/v1/api/busStationInfo');
+  url.searchParams.set('stationID', String(stationId));
+  url.searchParams.set('apiKey', process.env.ODSAY_API_KEY);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`ODsay busStationInfo API request failed (${response.status})`);
+  }
+
+  return response.json();
+}
+
 function normalizeRealtimeArrivals(data) {
   const candidates = data.result?.real || data.result?.station?.real || data.result?.realtimeArrival || [];
 
@@ -286,6 +299,97 @@ function getOdsayErrorMessage(errorPayload) {
     return errorPayload[0]?.message || errorPayload[0]?.msg || null;
   }
   return errorPayload?.message || errorPayload?.msg || null;
+}
+
+function uniqueStationIds(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+async function lookupRealtimeArrivals({ stationIds, routeId }) {
+  const attempts = [];
+
+  for (const stationId of stationIds) {
+    try {
+      const filtered = await odsayRealtimeStationRequest({ stationId, routeId });
+      if (!filtered.error) {
+        const arrivals = normalizeRealtimeArrivals(filtered);
+        attempts.push({ source: 'realtimeStation', stationId, routeFiltered: true, arrivals });
+        if (arrivals.length) {
+          return { arrivals, meta: { source: 'realtimeStation', stationId, routeFiltered: true, attempts } };
+        }
+      } else {
+        attempts.push({
+          source: 'realtimeStation',
+          stationId,
+          routeFiltered: true,
+          error: getOdsayErrorMessage(filtered.error) || 'Realtime bus lookup failed.',
+        });
+      }
+    } catch (error) {
+      attempts.push({
+        source: 'realtimeStation',
+        stationId,
+        routeFiltered: true,
+        error: error instanceof Error ? error.message : 'Realtime bus lookup failed.',
+      });
+    }
+
+    try {
+      const unfiltered = await odsayRealtimeStationRequest({ stationId, routeId: '' });
+      if (!unfiltered.error) {
+        let arrivals = normalizeRealtimeArrivals(unfiltered);
+        if (routeId) {
+          arrivals = arrivals.filter((arrival) => String(arrival.routeId || '') === String(routeId));
+        }
+        attempts.push({ source: 'realtimeStation', stationId, routeFiltered: false, arrivals });
+        if (arrivals.length) {
+          return { arrivals, meta: { source: 'realtimeStation', stationId, routeFiltered: false, attempts } };
+        }
+      } else {
+        attempts.push({
+          source: 'realtimeStation',
+          stationId,
+          routeFiltered: false,
+          error: getOdsayErrorMessage(unfiltered.error) || 'Realtime bus lookup failed.',
+        });
+      }
+    } catch (error) {
+      attempts.push({
+        source: 'realtimeStation',
+        stationId,
+        routeFiltered: false,
+        error: error instanceof Error ? error.message : 'Realtime bus lookup failed.',
+      });
+    }
+
+    try {
+      const stationInfo = await odsayBusStationInfoRequest({ stationId });
+      if (!stationInfo.error) {
+        let arrivals = normalizeRealtimeArrivals(stationInfo);
+        if (routeId) {
+          arrivals = arrivals.filter((arrival) => String(arrival.routeId || '') === String(routeId));
+        }
+        attempts.push({ source: 'busStationInfo', stationId, arrivals });
+        if (arrivals.length) {
+          return { arrivals, meta: { source: 'busStationInfo', stationId, routeFiltered: Boolean(routeId), attempts } };
+        }
+      } else {
+        attempts.push({
+          source: 'busStationInfo',
+          stationId,
+          error: getOdsayErrorMessage(stationInfo.error) || 'Bus station lookup failed.',
+        });
+      }
+    } catch (error) {
+      attempts.push({
+        source: 'busStationInfo',
+        stationId,
+        error: error instanceof Error ? error.message : 'Bus station lookup failed.',
+      });
+    }
+  }
+
+  return { arrivals: [], meta: { source: 'none', stationId: stationIds[0] || null, routeFiltered: Boolean(routeId), attempts } };
 }
 
 export function createApp() {
@@ -410,9 +514,13 @@ export function createApp() {
 
   app.get('/api/bus/realtime', async (request, response) => {
     const stationId = String(request.query.stationId || '').trim();
+    const localStationId = String(request.query.localStationId || '').trim();
+    const arsId = String(request.query.arsId || '').trim();
     const routeId = String(request.query.routeId || '').trim();
 
-    if (!stationId) {
+    const stationIds = uniqueStationIds([stationId, localStationId, arsId]);
+
+    if (!stationIds.length) {
       response.status(400).json({ message: 'stationId is required.' });
       return;
     }
@@ -444,15 +552,14 @@ export function createApp() {
         return;
       }
 
-      const data = await odsayRealtimeStationRequest({ stationId, routeId });
-      if (data.error) {
-        response.status(502).json({ message: getOdsayErrorMessage(data.error) || 'Realtime bus lookup failed.' });
-        return;
-      }
+      const realtime = await lookupRealtimeArrivals({ stationIds, routeId });
 
       response.json({
-        arrivals: normalizeRealtimeArrivals(data),
-        meta: getServerMeta(),
+        arrivals: realtime.arrivals,
+        meta: {
+          ...getServerMeta(),
+          ...realtime.meta,
+        },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Realtime bus lookup failed.';
