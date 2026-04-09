@@ -3,6 +3,7 @@ import {
   enrichRoutesWithRealtime,
   getAppMeta,
   hasTransitApiKey,
+  refreshRouteRealtime,
   resolveBusSegmentStops,
   reverseGeocode,
   searchPlaces,
@@ -32,15 +33,15 @@ const COPY = {
   originLoading: '출발지를 불러오는 중입니다.',
   destIdle: '도착지를 입력하면 추천 장소가 나타납니다.',
   readyToSearch: '출발지와 도착지를 모두 확정하면 경로를 찾을 수 있습니다.',
-  apiOffline: '장소 검색 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  apiOffline: '장소 검색 서버와 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
   liveMode: '실시간 API 연결',
   demoMode: '데모 모드',
   gpsLoading: '현재 위치를 확인하는 중입니다.',
-  gpsDenied: '위치 권한을 사용할 수 없습니다. 검색이나 저장 장소로 출발지를 선택해 주세요.',
+  gpsDenied: '위치 권한을 사용할 수 없습니다. 검색으로 출발지를 선택해 주세요.',
   fallbackOrigin: '서울시청',
   currentOrigin: '현재 위치',
-  fallbackOriginHint: '위치 권한이 없어 서울시청을 기본 출발지로 사용했습니다.',
-  originSelected: '현재 위치를 출발지로 설정했습니다.',
+  fallbackOriginHint: '위치 권한이 없어 서울시청을 기본 출발지로 사용합니다.',
+  originSelected: '현재 위치를 출발지로 확정했습니다.',
   originReselect: '출발지를 자동완성 목록에서 다시 선택해 주세요.',
   destReselect: '도착지를 자동완성 목록에서 다시 선택해 주세요.',
   loadingPlaces: '장소 후보를 불러오는 중입니다.',
@@ -57,13 +58,13 @@ const COPY = {
   loadedOriginOffice: '회사를 출발지로 불러왔습니다.',
   loadedDestHome: '집을 도착지로 불러왔습니다.',
   loadedDestOffice: '회사를 도착지로 불러왔습니다.',
-  noSavedPlace: '저장된 장소가 없습니다. 먼저 도착지를 집 또는 회사로 저장해 주세요.',
-  mustConfirmOrigin: '출발지는 자동완성 목록 또는 현재 위치로 확정해야 합니다.',
+  noSavedPlace: '저장된 장소가 없습니다. 먼저 도착지를 집이나 회사로 저장해 주세요.',
+  mustConfirmOrigin: '출발지는 자동완성 목록이나 현재 위치로 확정해야 합니다.',
   mustConfirmDestination: '도착지는 자동완성 목록에서 선택해야 확정됩니다.',
   needBothPlaces: '출발지와 도착지를 모두 확정해 주세요.',
   transitKeyMissing: 'ODSAY 키가 설정되지 않았습니다. VITE_ODSAY_API_KEY를 확인해 주세요.',
   searchingRoutes: '대중교통 경로를 계산하는 중입니다.',
-  etaLoading: '실시간 버스 도착정보를 반영해 경로를 보정하는 중입니다.',
+  etaLoading: '실시간 버스 도착 정보를 반영해 경로를 보정하는 중입니다.',
   searchFailed: '경로 조회에 실패했습니다.',
   noRouteYet: '아직 선택된 경로가 없습니다.',
   foundRoutes: (count) => `${count}개의 추천 경로를 찾았습니다.`,
@@ -83,34 +84,34 @@ const COPY = {
   stopFocusReady: '버스 승차·하차 정류장을 지도에 표시했습니다.',
   stopFocusError: '버스 정류장 위치를 찾지 못했습니다. 경로 정보만 확인해 주세요.',
   stopFocusSummary: (segment) => `${segment.name} 승차·하차 정류장 표시 중`,
-  waitLabel: '대기',
   busArrivalSoon: (minutes) => `버스 ${formatMinutesLabel(minutes)} 뒤 도착`,
   realtimeApplied: '실시간 반영',
   realtimeFallback: '기본 경로',
   tightConnection: '놓칠 수 있음',
+  refreshingRealtime: '버스 시간 업데이트 중...',
+  refreshRealtime: '버스 시간 새로고침',
+  refreshedRealtime: '실시간 버스 정보를 다시 확인했습니다.',
+  refreshedRealtimeWithStop: (stopName) => `${stopName} 기준 버스 시간을 업데이트했습니다.`,
 };
+
+function createFieldState(helperText) {
+  return {
+    query: '',
+    place: null,
+    suggestions: [],
+    status: 'idle',
+    activeIndex: 0,
+    helperText,
+  };
+}
 
 const state = {
   meta: {
     demoMode: false,
   },
   fields: {
-    origin: {
-      query: '',
-      place: null,
-      suggestions: [],
-      status: 'idle',
-      activeIndex: 0,
-      helperText: COPY.originIdle,
-    },
-    destination: {
-      query: '',
-      place: null,
-      suggestions: [],
-      status: 'idle',
-      activeIndex: 0,
-      helperText: COPY.destIdle,
-    },
+    origin: createFieldState(COPY.originIdle),
+    destination: createFieldState(COPY.destIdle),
   },
   savedPlaces: [],
   sortBy: 'time',
@@ -118,6 +119,7 @@ const state = {
   routes: [],
   selectedRouteId: null,
   selectedSegmentId: null,
+  refreshingRouteId: null,
   map: null,
   searchMessage: COPY.readyToSearch,
 };
@@ -129,6 +131,7 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   cacheDom();
+  fixBrokenMarkup();
   bindEvents();
   renderClock();
   window.setInterval(renderClock, 30000);
@@ -179,6 +182,12 @@ function cacheDom() {
   dom.emptyState = $('#emptyState');
   dom.map = $('#map');
   dom.mapSummary = $('#mapSummary');
+}
+
+function fixBrokenMarkup() {
+  if (dom.btnSwap) {
+    dom.btnSwap.textContent = '⇅';
+  }
 }
 
 function bindEvents() {
@@ -291,7 +300,7 @@ async function loadCurrentLocation() {
       lng: position.coords.lng,
       source: 'gps',
     });
-    state.fields.origin.helperText = `현재 좌표(${position.coords.lat.toFixed(4)}, ${position.coords.lng.toFixed(4)})를 출발지로 설정했습니다.`;
+    state.fields.origin.helperText = `현재 좌표(${position.coords.lat.toFixed(4)}, ${position.coords.lng.toFixed(4)})를 출발지로 확정했습니다.`;
     state.searchMessage = COPY.originSelected;
   }
 
@@ -308,18 +317,14 @@ function handleFieldInput(fieldName) {
     if (field.place && field.place.name !== field.query) {
       field.place = null;
       field.helperText = fieldName === 'origin' ? COPY.originReselect : COPY.destReselect;
-      if (fieldName === 'destination') {
-        clearRouteResults();
-      }
+      clearRouteResults();
     }
 
     if (!field.query.trim()) {
       field.suggestions = [];
       field.status = 'idle';
       field.helperText = fieldName === 'origin' ? COPY.originIdle : COPY.destIdle;
-      if (fieldName === 'destination') {
-        clearRouteResults();
-      }
+      clearRouteResults();
       renderField(fieldName);
       renderSearchState();
       syncMap();
@@ -414,6 +419,30 @@ function closeSuggestions(fieldName) {
   }
 }
 
+function buildAutocomplete(fieldName) {
+  const field = state.fields[fieldName];
+
+  if (field.status === 'loading') {
+    return '<li class="autocomplete-state">검색 중입니다...</li>';
+  }
+  if (field.status === 'error') {
+    return `<li class="autocomplete-state error">${field.helperText}</li>`;
+  }
+  if (field.status === 'empty') {
+    return '<li class="autocomplete-state">검색 결과가 없습니다.</li>';
+  }
+
+  return field.suggestions.map((place, index) => `
+    <li class="autocomplete-item ${index === field.activeIndex ? 'active' : ''}" data-index="${index}" role="option" aria-selected="${index === field.activeIndex}">
+      <div>
+        <strong>${highlightMatch(place.name, field.query)}</strong>
+        <p>${place.roadAddress || place.jibunAddress || COPY.noAddress}</p>
+      </div>
+      <span>${place.source === 'mock' ? COPY.demoPlace : COPY.realPlace}</span>
+    </li>
+  `).join('');
+}
+
 function renderField(fieldName) {
   const field = state.fields[fieldName];
   const input = fieldName === 'origin' ? dom.originInput : dom.destInput;
@@ -444,37 +473,7 @@ function renderField(fieldName) {
       const place = field.suggestions[Number(node.dataset.index)];
       selectPlace(fieldName, place);
     });
-    node.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const place = field.suggestions[Number(node.dataset.index)];
-      selectPlace(fieldName, place);
-    });
   });
-}
-
-function buildAutocomplete(fieldName) {
-  const field = state.fields[fieldName];
-
-  if (field.status === 'loading') {
-    return '<li class="autocomplete-state">검색 중입니다...</li>';
-  }
-  if (field.status === 'error') {
-    return `<li class="autocomplete-state error">${field.helperText}</li>`;
-  }
-  if (field.status === 'empty') {
-    return '<li class="autocomplete-state">검색 결과가 없습니다.</li>';
-  }
-
-  return field.suggestions.map((place, index) => `
-    <li class="autocomplete-item ${index === field.activeIndex ? 'active' : ''}" data-index="${index}" role="option" aria-selected="${index === field.activeIndex}">
-      <div>
-        <strong>${highlightMatch(place.name, field.query)}</strong>
-        <p>${place.roadAddress || place.jibunAddress || COPY.noAddress}</p>
-      </div>
-      <span>${place.source === 'mock' ? COPY.demoPlace : COPY.realPlace}</span>
-    </li>
-  `).join('');
 }
 
 function selectPlace(fieldName, place) {
@@ -486,10 +485,7 @@ function selectPlace(fieldName, place) {
   field.activeIndex = 0;
   field.helperText = place.roadAddress || place.jibunAddress || `${place.lat.toFixed(4)}, ${place.lng.toFixed(4)}`;
 
-  if (fieldName === 'destination') {
-    clearRouteResults();
-  }
-
+  clearRouteResults();
   renderField(fieldName);
   renderSearchState();
   syncMap();
@@ -503,14 +499,14 @@ function clearField(fieldName) {
   field.status = 'idle';
   field.activeIndex = 0;
   field.helperText = fieldName === 'origin' ? COPY.originIdle : COPY.destIdle;
-
-  if (fieldName === 'destination') {
-    clearRouteResults();
-  }
-
+  clearRouteResults();
   renderField(fieldName);
   renderSearchState();
   syncMap();
+}
+
+function clonePlace(place) {
+  return place ? JSON.parse(JSON.stringify(place)) : null;
 }
 
 function swapPlaces() {
@@ -527,10 +523,6 @@ function swapPlaces() {
   selectPlace('destination', origin);
   state.searchMessage = COPY.swapped;
   renderSearchState();
-}
-
-function clonePlace(place) {
-  return place ? JSON.parse(JSON.stringify(place)) : null;
 }
 
 function getSavedPlace(label) {
@@ -572,7 +564,7 @@ function renderSearchState() {
   const destinationNeedsConfirm = Boolean(state.fields.destination.query && !state.fields.destination.place);
   const canSearch = Boolean(state.fields.origin.place && state.fields.destination.place);
 
-  dom.btnSearch.disabled = !canSearch;
+  dom.btnSearch.disabled = !canSearch || state.refreshingRouteId !== null;
 
   if (!hasTransitApiKey()) {
     dom.searchMessage.textContent = COPY.transitKeyMissing;
@@ -646,9 +638,26 @@ function clearRouteResults() {
   state.routes = [];
   state.selectedRouteId = null;
   state.selectedSegmentId = null;
+  state.refreshingRouteId = null;
   if (state.map) {
     state.map.clearSegmentFocus();
   }
+}
+
+function getSelectedRoute(sortedRoutes = state.routes) {
+  return sortedRoutes.find((route) => route.id === state.selectedRouteId) || sortedRoutes[0] || null;
+}
+
+function getSelectedSegment(route) {
+  return route?.segments.find((segment) => segment.id === state.selectedSegmentId) || null;
+}
+
+function getSegmentRealtime(route, segment) {
+  return segment ? route?.realtimeBySegment?.[segment.id] || null : null;
+}
+
+function hasRealtimeRefresh(route) {
+  return route?.segments?.some((segment) => segment.type === 'bus' && segment.startStop?.stationId && segment.routeId);
 }
 
 function renderRealtimeMeta(route) {
@@ -659,19 +668,52 @@ function renderRealtimeMeta(route) {
   if (route.realtime.status === 'live' || route.realtime.status === 'tight') {
     const warning = route.realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
     const leftStation = Number.isFinite(route.realtime.leftStation) ? ` · ${route.realtime.leftStation}정류장 전` : '';
-    return `<span>${COPY.busArrivalSoon(route.realtime.waitMinutes)}</span><span>${COPY.realtimeApplied}${leftStation}${warning}</span>`;
+    const stopName = route.realtime.stopName ? `${route.realtime.stopName} 기준` : COPY.realtimeApplied;
+    return `<span>${COPY.busArrivalSoon(route.realtime.waitMinutes)}</span><span>${stopName}${leftStation}${warning}</span>`;
   }
 
-  return `<span>${COPY.realtimeFallback}</span>`;
+  return `<span>${route.realtime.reason || COPY.realtimeFallback}</span>`;
 }
 
 function renderSegmentEta(route, segment) {
-  if (segment.type !== 'bus' || !route.realtime || route.realtime.segmentId !== segment.id) {
+  const realtime = getSegmentRealtime(route, segment);
+
+  if (segment.type !== 'bus' || !realtime || !Number.isFinite(realtime.waitMinutes)) {
     return '';
   }
 
-  const warning = route.realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
-  return `<small class="segment-eta">${COPY.busArrivalSoon(route.realtime.waitMinutes)}${warning}</small>`;
+  const warning = realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
+  return `<small class="segment-eta">${COPY.busArrivalSoon(realtime.waitMinutes)}${warning}</small>`;
+}
+
+function renderDetailEta(route, segment) {
+  const realtime = getSegmentRealtime(route, segment);
+
+  if (!realtime) {
+    return '';
+  }
+
+  if (realtime.status === 'live' || realtime.status === 'tight') {
+    const leftStation = Number.isFinite(realtime.leftStation) ? ` · ${realtime.leftStation}정류장 전` : '';
+    const warning = realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
+    const stopName = realtime.stopName ? `${realtime.stopName} 기준` : '승차 정류장 기준';
+    return `<p class="detail-realtime">${stopName} ${COPY.busArrivalSoon(realtime.waitMinutes)}${leftStation}${warning}</p>`;
+  }
+
+  return `<p class="detail-realtime muted">${realtime.reason || COPY.realtimeFallback}</p>`;
+}
+
+function renderRefreshButton(route) {
+  if (!hasRealtimeRefresh(route)) {
+    return '';
+  }
+
+  const isRefreshing = state.refreshingRouteId === route.id;
+  return `
+    <button class="route-refresh-button" type="button" data-refresh-route-id="${route.id}" ${isRefreshing ? 'disabled' : ''}>
+      ${isRefreshing ? COPY.refreshingRealtime : COPY.refreshRealtime}
+    </button>
+  `;
 }
 
 function renderRoutes() {
@@ -720,11 +762,13 @@ function renderRoutes() {
         <span>${formatTime(route.effectiveArrivalTime || route.arrivalTime)} 도착</span>
       </div>
       <div class="route-details">
+        ${route.id === state.selectedRouteId ? `<div class="route-details-toolbar">${renderRefreshButton(route)}</div>` : ''}
         ${route.segments.map((segment) => `
           <div class="detail-row ${segment.id === state.selectedSegmentId ? 'active' : ''}" data-route-id="${route.id}" data-segment-id="${segment.id}">
             <div>
               <strong>${segment.name}</strong>
               <p>${segment.detail || COPY.noDetails}</p>
+              ${renderDetailEta(route, segment)}
             </div>
             <span>${formatMinutesLabel(segment.duration)}</span>
           </div>
@@ -751,15 +795,58 @@ function renderRoutes() {
     node.addEventListener('click', async (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const routeId = Number(node.dataset.routeId);
-      const segmentId = node.dataset.segmentId;
-      await focusSegment(routeId, segmentId);
+      await focusSegment(Number(node.dataset.routeId), node.dataset.segmentId);
+    });
+  });
+
+  dom.resultsList.querySelectorAll('[data-refresh-route-id]').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const routeId = Number(button.dataset.refreshRouteId);
+      const preferredSegmentId = state.selectedRouteId === routeId ? state.selectedSegmentId : null;
+      await updateRouteRealtime(routeId, preferredSegmentId);
     });
   });
 
   dom.mapSummary.textContent = activeSegment?.type === 'bus'
     ? COPY.stopFocusSummary(activeSegment)
     : `${formatDuration(getRouteSortTime(selectedRoute))} · 환승 ${selectedRoute.transferCount}회 · 도보 ${formatMinutesLabel(selectedRoute.walkTime)}`;
+}
+
+async function updateRouteRealtime(routeId, preferredSegmentId = null) {
+  const route = state.routes.find((item) => item.id === routeId);
+
+  if (!route || state.refreshingRouteId === routeId) {
+    return route || null;
+  }
+
+  state.refreshingRouteId = routeId;
+  renderRoutes();
+
+  try {
+    const refreshedRoute = await refreshRouteRealtime(route, preferredSegmentId);
+    state.routes = state.routes.map((item) => (item.id === routeId ? refreshedRoute : item));
+    const focusedRealtime = preferredSegmentId
+      ? refreshedRoute.realtimeBySegment?.[preferredSegmentId] || refreshedRoute.realtime
+      : refreshedRoute.realtime;
+
+    if (focusedRealtime?.stopName) {
+      state.searchMessage = COPY.refreshedRealtimeWithStop(focusedRealtime.stopName);
+    } else {
+      state.searchMessage = COPY.refreshedRealtime;
+    }
+
+    return refreshedRoute;
+  } catch (error) {
+    state.searchMessage = error instanceof Error ? error.message : COPY.searchFailed;
+    return null;
+  } finally {
+    state.refreshingRouteId = null;
+    renderSearchState();
+    renderRoutes();
+    syncMap();
+  }
 }
 
 async function focusSegment(routeId, segmentId) {
@@ -769,7 +856,7 @@ async function focusSegment(routeId, segmentId) {
   syncMap();
 
   const route = state.routes.find((item) => item.id === routeId);
-  const segment = route?.segments.find((item) => item.id === segmentId);
+  let segment = route?.segments.find((item) => item.id === segmentId);
 
   if (!segment || segment.type !== 'bus') {
     state.searchMessage = COPY.readyToSearch;
@@ -781,6 +868,11 @@ async function focusSegment(routeId, segmentId) {
   renderSearchState();
 
   try {
+    const refreshedRoute = await updateRouteRealtime(routeId, segmentId);
+    if (refreshedRoute) {
+      segment = refreshedRoute.segments.find((item) => item.id === segmentId) || segment;
+    }
+
     const resolved = await resolveBusSegmentStops(segment);
     segment.startStop = resolved.startStop;
     segment.endStop = resolved.endStop;
@@ -798,14 +890,6 @@ async function focusSegment(routeId, segmentId) {
 
   renderSearchState();
   renderRoutes();
-}
-
-function getSelectedRoute(sortedRoutes = state.routes) {
-  return sortedRoutes.find((route) => route.id === state.selectedRouteId) || sortedRoutes[0] || null;
-}
-
-function getSelectedSegment(route) {
-  return route?.segments.find((segment) => segment.id === state.selectedSegmentId) || null;
 }
 
 function syncMap() {

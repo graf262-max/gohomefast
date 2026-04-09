@@ -570,6 +570,26 @@ button {
   border-top: 1px solid var(--border);
 }
 
+.route-details-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.route-refresh-button {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--accent-strong);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.route-refresh-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
 .detail-row {
   align-items: start;
   padding: 10px 12px;
@@ -584,6 +604,16 @@ button {
 .detail-row strong {
   display: block;
   margin-bottom: 4px;
+}
+
+.detail-realtime {
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: var(--accent-strong);
+}
+
+.detail-realtime.muted {
+  color: var(--muted);
 }
 
 .segment-helper {

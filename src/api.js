@@ -42,10 +42,12 @@ function extractStops(subPath) {
     lat: station.y ? Number(station.y) : null,
     lng: station.x ? Number(station.x) : null,
     stationId: station.stationID || station.stationId || station.localStationID || null,
+    localStationId: station.localStationID || station.localStationId || null,
+    arsId: station.arsID || station.arsId || null,
   })).filter((station) => station.name) || [];
 }
 
-function toStop(name, lat, lng, stationId = null) {
+function toStop(name, lat, lng, stationId = null, options = {}) {
   if (!name) {
     return null;
   }
@@ -57,6 +59,8 @@ function toStop(name, lat, lng, stationId = null) {
     lat: Number.isFinite(normalizedLat) ? normalizedLat : null,
     lng: Number.isFinite(normalizedLng) ? normalizedLng : null,
     stationId: stationId || null,
+    localStationId: options.localStationId || null,
+    arsId: options.arsId || null,
   };
 }
 
@@ -68,6 +72,22 @@ function getStationId(subPath, type) {
   const candidates = type === 'start'
     ? [subPath.startID, subPath.startStationID, subPath.startStationId, subPath.startLocalStationID]
     : [subPath.endID, subPath.endStationID, subPath.endStationId, subPath.endLocalStationID];
+
+  return candidates.find((value) => value !== undefined && value !== null && value !== '') || null;
+}
+
+function getLocalStationId(subPath, type) {
+  const candidates = type === 'start'
+    ? [subPath.startLocalStationID, subPath.startLocalStationId]
+    : [subPath.endLocalStationID, subPath.endLocalStationId];
+
+  return candidates.find((value) => value !== undefined && value !== null && value !== '') || null;
+}
+
+function getArsId(subPath, type) {
+  const candidates = type === 'start'
+    ? [subPath.startArsID, subPath.startArsId]
+    : [subPath.endArsID, subPath.endArsId];
 
   return candidates.find((value) => value !== undefined && value !== null && value !== '') || null;
 }
@@ -116,8 +136,26 @@ function normalizeRouteResponse(data, departureTime) {
         const lane = subPath.lane?.[0] || {};
         const routeName = lane.busNo ? String(lane.busNo) : '버스';
         const passStops = extractStops(subPath);
-        const startStop = toStop(subPath.startName, subPath.startY, subPath.startX, getStationId(subPath, 'start'));
-        const endStop = toStop(subPath.endName, subPath.endY, subPath.endX, getStationId(subPath, 'end'));
+        const startStop = toStop(
+          subPath.startName,
+          subPath.startY,
+          subPath.startX,
+          getStationId(subPath, 'start'),
+          {
+            localStationId: getLocalStationId(subPath, 'start'),
+            arsId: getArsId(subPath, 'start'),
+          },
+        );
+        const endStop = toStop(
+          subPath.endName,
+          subPath.endY,
+          subPath.endX,
+          getStationId(subPath, 'end'),
+          {
+            localStationId: getLocalStationId(subPath, 'end'),
+            arsId: getArsId(subPath, 'end'),
+          },
+        );
 
         segments.push({
           id: `route-${routeIndex + 1}-bus-${segments.length + 1}`,
@@ -127,6 +165,7 @@ function normalizeRouteResponse(data, departureTime) {
           detail: `${subPath.startName} -> ${subPath.endName} · ${getBusTypeLabel(lane.type)}`,
           color: '#2563eb',
           routeId: getBusRouteId(lane),
+          intervalMinutes: Number(lane.intervalTime ?? subPath.intervalTime) || null,
           startStop,
           endStop,
           stops: passStops,
@@ -195,6 +234,7 @@ function normalizeRouteResponse(data, departureTime) {
       arrivalTime: addMinutes(baseTime, totalTime).toISOString(),
       effectiveArrivalTime: addMinutes(baseTime, totalTime).toISOString(),
       realtime: null,
+      realtimeBySegment: {},
       segments: decoratedSegments,
     };
   });
@@ -233,7 +273,7 @@ async function resolveStopWithSearch(stop, hint) {
   };
 }
 
-function getInitialAccessMinutes(route, busSegmentId) {
+function getAccessMinutesUntilSegment(route, busSegmentId) {
   let total = 0;
 
   for (const segment of route.segments) {
@@ -292,6 +332,66 @@ async function fetchBusRealtime(stationId, routeId) {
   return fetchJson(`/api/bus/realtime?stationId=${encodeURIComponent(stationId)}&routeId=${encodeURIComponent(routeId)}`);
 }
 
+function getBusSegments(route) {
+  return route.segments.filter((segment) => segment.type === 'bus' && segment.startStop?.stationId && segment.routeId);
+}
+
+async function enrichBusSegmentRealtime(route, segment) {
+  const accessMinutes = getAccessMinutesUntilSegment(route, segment.id);
+  const minimumBufferSec = (accessMinutes + MINIMUM_BOARDING_BUFFER_MINUTES) * 60;
+  const realtimeResponse = await fetchBusRealtime(segment.startStop.stationId, segment.routeId);
+  const picked = pickBestArrival(realtimeResponse.arrivals, minimumBufferSec);
+
+  if (!picked) {
+    return {
+      segmentId: segment.id,
+      status: 'unavailable',
+      reason: '실시간 정보 없음',
+      stopName: segment.startStop?.name || null,
+      routeId: segment.routeId,
+      routeName: segment.name,
+      accessMinutes,
+    };
+  }
+
+  const waitMinutes = Math.ceil(picked.arrival.arrivalSec / 60);
+  return {
+    segmentId: segment.id,
+    status: picked.isTightConnection ? 'tight' : 'live',
+    waitMinutes,
+    waitSeconds: picked.arrival.arrivalSec,
+    leftStation: Number.isFinite(picked.arrival.leftStation) ? picked.arrival.leftStation : null,
+    accessMinutes,
+    missRiskPenaltyMinutes: picked.missRiskPenaltyMinutes,
+    routeId: picked.arrival.routeId || segment.routeId,
+    routeName: picked.arrival.routeName || segment.name,
+    stopName: segment.startStop?.name || null,
+  };
+}
+
+function applyPrimaryRealtime(route, primaryRealtime) {
+  if (!primaryRealtime || !Number.isFinite(primaryRealtime.waitMinutes)) {
+    return {
+      ...route,
+      effectiveTotalTime: route.totalTime,
+      effectiveArrivalTime: route.arrivalTime,
+      realtime: primaryRealtime || null,
+    };
+  }
+
+  const effectiveTotalTime = Math.max(
+    1,
+    route.totalTime + (primaryRealtime.waitMinutes - STATIC_WAIT_BASELINE_MINUTES) + (primaryRealtime.missRiskPenaltyMinutes || 0),
+  );
+
+  return {
+    ...route,
+    effectiveTotalTime,
+    effectiveArrivalTime: addMinutes(route.departureTime, effectiveTotalTime).toISOString(),
+    realtime: primaryRealtime,
+  };
+}
+
 export function hasTransitApiKey() {
   return Boolean(ODSAY_API_KEY);
 }
@@ -327,11 +427,7 @@ export async function searchTransitRoutes(origin, destination, departureTime) {
 
   const payload = await response.json().catch(() => ({}));
 
-  if (!response.ok) {
-    throw new Error(payload.error?.[0]?.message || '대중교통 경로 조회에 실패했습니다.');
-  }
-
-  if (payload.error) {
+  if (!response.ok || payload.error) {
     throw new Error(payload.error?.[0]?.message || '대중교통 경로 조회에 실패했습니다.');
   }
 
@@ -343,70 +439,58 @@ export async function searchTransitRoutes(origin, destination, departureTime) {
   };
 }
 
-export async function enrichRoutesWithRealtime(routes) {
-  return Promise.all(routes.map(async (route) => {
-    const firstBusSegment = route.segments.find((segment) => segment.type === 'bus' && segment.startStop?.stationId && segment.routeId);
+export async function refreshRouteRealtime(route, preferredSegmentId = null) {
+  const busSegments = getBusSegments(route);
 
-    if (!firstBusSegment) {
-      return {
-        ...route,
-        effectiveTotalTime: route.totalTime,
-        effectiveArrivalTime: route.arrivalTime,
-        realtime: null,
-      };
-    }
+  if (!busSegments.length) {
+    return {
+      ...route,
+      effectiveTotalTime: route.totalTime,
+      effectiveArrivalTime: route.arrivalTime,
+      realtime: null,
+      realtimeBySegment: {},
+    };
+  }
 
+  const orderedSegments = preferredSegmentId
+    ? [
+        ...busSegments.filter((segment) => segment.id === preferredSegmentId),
+        ...busSegments.filter((segment) => segment.id !== preferredSegmentId),
+      ]
+    : busSegments;
+
+  const realtimeEntries = await Promise.all(orderedSegments.map(async (segment) => {
     try {
-      const accessMinutes = getInitialAccessMinutes(route, firstBusSegment.id);
-      const minimumBufferSec = (accessMinutes + MINIMUM_BOARDING_BUFFER_MINUTES) * 60;
-      const realtimeResponse = await fetchBusRealtime(firstBusSegment.startStop.stationId, firstBusSegment.routeId);
-      const picked = pickBestArrival(realtimeResponse.arrivals, minimumBufferSec);
-
-      if (!picked) {
-        return {
-          ...route,
-          effectiveTotalTime: route.totalTime,
-          effectiveArrivalTime: route.arrivalTime,
-          realtime: {
-            status: 'unavailable',
-            reason: '도착 정보 없음',
-          },
-        };
-      }
-
-      const waitMinutes = Math.ceil(picked.arrival.arrivalSec / 60);
-      const effectiveTotalTime = Math.max(
-        1,
-        route.totalTime + (waitMinutes - STATIC_WAIT_BASELINE_MINUTES) + picked.missRiskPenaltyMinutes,
-      );
-
-      return {
-        ...route,
-        effectiveTotalTime,
-        effectiveArrivalTime: addMinutes(route.departureTime, effectiveTotalTime).toISOString(),
-        realtime: {
-          status: picked.isTightConnection ? 'tight' : 'live',
-          waitMinutes,
-          leftStation: Number.isFinite(picked.arrival.leftStation) ? picked.arrival.leftStation : null,
-          accessMinutes,
-          missRiskPenaltyMinutes: picked.missRiskPenaltyMinutes,
-          routeId: picked.arrival.routeId,
-          routeName: picked.arrival.routeName || firstBusSegment.name,
-          segmentId: firstBusSegment.id,
-        },
-      };
+      return await enrichBusSegmentRealtime(route, segment);
     } catch {
       return {
-        ...route,
-        effectiveTotalTime: route.totalTime,
-        effectiveArrivalTime: route.arrivalTime,
-        realtime: {
-          status: 'error',
-          reason: '실시간 조회 실패',
-        },
+        segmentId: segment.id,
+        status: 'error',
+        reason: '실시간 조회 실패',
+        stopName: segment.startStop?.name || null,
+        routeId: segment.routeId,
+        routeName: segment.name,
+        accessMinutes: getAccessMinutesUntilSegment(route, segment.id),
       };
     }
   }));
+
+  const realtimeBySegment = realtimeEntries.reduce((map, realtime) => {
+    map[realtime.segmentId] = realtime;
+    return map;
+  }, {});
+
+  const primarySegment = busSegments[0];
+  const primaryRealtime = primarySegment ? realtimeBySegment[primarySegment.id] || null : null;
+
+  return {
+    ...applyPrimaryRealtime(route, primaryRealtime),
+    realtimeBySegment,
+  };
+}
+
+export async function enrichRoutesWithRealtime(routes) {
+  return Promise.all(routes.map((route) => refreshRouteRealtime(route)));
 }
 
 export async function resolveBusSegmentStops(segment) {
