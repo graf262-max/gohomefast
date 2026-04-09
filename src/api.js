@@ -348,6 +348,24 @@ function normalizeRealtimeCandidates(arrivals) {
     .sort((a, b) => a.arrivalSec - b.arrivalSec);
 }
 
+function normalizeRouteName(value) {
+  return String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/번/g, '')
+    .toLowerCase();
+}
+
+function filterArrivalsForSegment(arrivals, routeId, routeName) {
+  const normalizedName = normalizeRouteName(routeName);
+  const byRouteId = (arrivals || []).filter((arrival) => String(arrival.routeId || '') === String(routeId));
+
+  if (byRouteId.length) {
+    return byRouteId;
+  }
+
+  return (arrivals || []).filter((arrival) => normalizeRouteName(arrival.routeName) === normalizedName);
+}
+
 function pickBestArrival(arrivals, minimumBufferSec) {
   const normalized = normalizeRealtimeCandidates(arrivals);
 
@@ -393,7 +411,7 @@ function uniqueStationIds(values) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
-async function fetchBusRealtime(stop, routeId) {
+async function fetchBusRealtime(stop, routeId, routeName) {
   const stationIds = uniqueStationIds([stop?.stationId, stop?.localStationId, stop?.arsId]);
 
   if (!stationIds.length || !routeId) {
@@ -416,7 +434,7 @@ async function fetchBusRealtime(stop, routeId) {
 
     try {
       const unfiltered = await fetchOdsay(buildRealtimeUrl(stationId));
-      const arrivals = normalizeRealtimeArrivals(unfiltered).filter((arrival) => String(arrival.routeId || '') === String(routeId));
+      const arrivals = filterArrivalsForSegment(normalizeRealtimeArrivals(unfiltered), routeId, routeName);
       attempts.push({ source: 'realtimeStation', stationId, routeFiltered: false, arrivals });
       if (arrivals.length) {
         return { arrivals, meta: { stationId, source: 'realtimeStation', routeFiltered: false, attempts } };
@@ -427,7 +445,7 @@ async function fetchBusRealtime(stop, routeId) {
 
     try {
       const stationInfo = await fetchOdsay(buildBusStationInfoUrl(stationId));
-      const arrivals = normalizeRealtimeArrivals(stationInfo).filter((arrival) => String(arrival.routeId || '') === String(routeId));
+      const arrivals = filterArrivalsForSegment(normalizeRealtimeArrivals(stationInfo), routeId, routeName);
       attempts.push({ source: 'busStationInfo', stationId, arrivals });
       if (arrivals.length) {
         return { arrivals, meta: { stationId, source: 'busStationInfo', routeFiltered: false, attempts } };
@@ -447,7 +465,7 @@ function getBusSegments(route) {
 async function enrichBusSegmentRealtime(route, segment) {
   const accessMinutes = getAccessMinutesUntilSegment(route, segment.id);
   const minimumBufferSec = (accessMinutes + MINIMUM_BOARDING_BUFFER_MINUTES) * 60;
-  const realtimeResponse = await fetchBusRealtime(segment.startStop, segment.routeId);
+  const realtimeResponse = await fetchBusRealtime(segment.startStop, segment.routeId, segment.name);
   const picked = pickBestArrival(realtimeResponse.arrivals, minimumBufferSec);
 
   if (!picked) {
