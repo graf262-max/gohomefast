@@ -36,6 +36,33 @@ async function fetchJson(url, options) {
   return payload;
 }
 
+function buildOdsayUrl(origin, destination) {
+  const url = new URL('https://api.odsay.com/v1/api/searchPubTransPathT');
+  url.searchParams.set('SX', String(origin.lng));
+  url.searchParams.set('SY', String(origin.lat));
+  url.searchParams.set('EX', String(destination.lng));
+  url.searchParams.set('EY', String(destination.lat));
+  url.searchParams.set('apiKey', ODSAY_API_KEY);
+  return url;
+}
+
+function buildRealtimeUrl(stationId, routeId = '') {
+  const url = new URL('https://api.odsay.com/v1/api/realtimeStation');
+  url.searchParams.set('stationID', String(stationId));
+  if (routeId) {
+    url.searchParams.set('routeIDs', String(routeId));
+  }
+  url.searchParams.set('apiKey', ODSAY_API_KEY);
+  return url;
+}
+
+function buildBusStationInfoUrl(stationId) {
+  const url = new URL('https://api.odsay.com/v1/api/busStationInfo');
+  url.searchParams.set('stationID', String(stationId));
+  url.searchParams.set('apiKey', ODSAY_API_KEY);
+  return url;
+}
+
 function extractStops(subPath) {
   return subPath.passStopList?.stations?.map((station) => ({
     name: station.stationName,
@@ -90,16 +117,6 @@ function getArsId(subPath, type) {
     : [subPath.endArsID, subPath.endArsId];
 
   return candidates.find((value) => value !== undefined && value !== null && value !== '') || null;
-}
-
-function buildOdsayUrl(origin, destination) {
-  const url = new URL('https://api.odsay.com/v1/api/searchPubTransPathT');
-  url.searchParams.set('SX', String(origin.lng));
-  url.searchParams.set('SY', String(origin.lat));
-  url.searchParams.set('EX', String(destination.lng));
-  url.searchParams.set('EY', String(destination.lat));
-  url.searchParams.set('apiKey', ODSAY_API_KEY);
-  return url;
 }
 
 function buildStopQuery(stopName, routeName) {
@@ -226,9 +243,7 @@ function normalizeRouteResponse(data, departureTime) {
       transferCount: Math.max(((info.busTransitCount || 0) + (info.subwayTransitCount || 0)) - 1, 0),
       walkTime: info.totalWalk
         ? Math.round(info.totalWalk / 60)
-        : decoratedSegments
-          .filter((segment) => segment.type === 'walk')
-          .reduce((sum, segment) => sum + segment.duration, 0),
+        : decoratedSegments.filter((segment) => segment.type === 'walk').reduce((sum, segment) => sum + segment.duration, 0),
       fare: info.payment || 0,
       departureTime: baseTime.toISOString(),
       arrivalTime: addMinutes(baseTime, totalTime).toISOString(),
@@ -289,6 +304,38 @@ function getAccessMinutesUntilSegment(route, busSegmentId) {
   return total;
 }
 
+function normalizeRealtimeArrivals(data) {
+  const candidates = data.result?.real || data.result?.station?.real || data.result?.realtimeArrival || [];
+
+  return candidates.flatMap((item) => {
+    const base = {
+      routeId: item.routeID || item.routeId || item.busID || null,
+      routeName: item.routeNm || item.routeName || item.routeNo || null,
+    };
+    const arrivals = [];
+
+    const firstArrivalSec = Number(item.arrival1?.arrivalSec ?? item.arrivalSec ?? item.arriveSec1);
+    if (Number.isFinite(firstArrivalSec) && firstArrivalSec >= 0) {
+      arrivals.push({
+        ...base,
+        arrivalSec: firstArrivalSec,
+        leftStation: Number(item.arrival1?.leftStation ?? item.leftStation ?? item.leftStation1),
+      });
+    }
+
+    const secondArrivalSec = Number(item.arrival2?.arrivalSec ?? item.arrivalSec2 ?? item.arriveSec2);
+    if (Number.isFinite(secondArrivalSec) && secondArrivalSec >= 0) {
+      arrivals.push({
+        ...base,
+        arrivalSec: secondArrivalSec,
+        leftStation: Number(item.arrival2?.leftStation ?? item.leftStation2),
+      });
+    }
+
+    return arrivals;
+  }).sort((a, b) => a.arrivalSec - b.arrivalSec);
+}
+
 function normalizeRealtimeCandidates(arrivals) {
   return (arrivals || [])
     .map((arrival) => ({
@@ -324,25 +371,73 @@ function pickBestArrival(arrivals, minimumBufferSec) {
   };
 }
 
+async function fetchOdsay(url) {
+  const response = await fetch(url, {
+    method: 'GET',
+    mode: 'cors',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error?.[0]?.message || 'ODSAY 요청에 실패했습니다.');
+  }
+
+  return payload;
+}
+
+function uniqueStationIds(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
 async function fetchBusRealtime(stop, routeId) {
-  if (!stop?.stationId || !routeId) {
+  const stationIds = uniqueStationIds([stop?.stationId, stop?.localStationId, stop?.arsId]);
+
+  if (!stationIds.length || !routeId) {
     return { arrivals: [] };
   }
 
-  const params = new URLSearchParams({
-    stationId: String(stop.stationId),
-    routeId: String(routeId),
-  });
+  const attempts = [];
 
-  if (stop.localStationId) {
-    params.set('localStationId', String(stop.localStationId));
+  for (const stationId of stationIds) {
+    try {
+      const filtered = await fetchOdsay(buildRealtimeUrl(stationId, routeId));
+      const arrivals = normalizeRealtimeArrivals(filtered);
+      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: true, arrivals });
+      if (arrivals.length) {
+        return { arrivals, meta: { stationId, source: 'realtimeStation', routeFiltered: true, attempts } };
+      }
+    } catch (error) {
+      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: true, error: error instanceof Error ? error.message : '실시간 조회 실패' });
+    }
+
+    try {
+      const unfiltered = await fetchOdsay(buildRealtimeUrl(stationId));
+      const arrivals = normalizeRealtimeArrivals(unfiltered).filter((arrival) => String(arrival.routeId || '') === String(routeId));
+      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: false, arrivals });
+      if (arrivals.length) {
+        return { arrivals, meta: { stationId, source: 'realtimeStation', routeFiltered: false, attempts } };
+      }
+    } catch (error) {
+      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: false, error: error instanceof Error ? error.message : '실시간 조회 실패' });
+    }
+
+    try {
+      const stationInfo = await fetchOdsay(buildBusStationInfoUrl(stationId));
+      const arrivals = normalizeRealtimeArrivals(stationInfo).filter((arrival) => String(arrival.routeId || '') === String(routeId));
+      attempts.push({ source: 'busStationInfo', stationId, arrivals });
+      if (arrivals.length) {
+        return { arrivals, meta: { stationId, source: 'busStationInfo', routeFiltered: false, attempts } };
+      }
+    } catch (error) {
+      attempts.push({ source: 'busStationInfo', stationId, error: error instanceof Error ? error.message : '정류장 조회 실패' });
+    }
   }
 
-  if (stop.arsId) {
-    params.set('arsId', String(stop.arsId));
-  }
-
-  return fetchJson(`/api/bus/realtime?${params.toString()}`);
+  return { arrivals: [], meta: { stationId: stationIds[0] || null, source: 'none', attempts } };
 }
 
 function getBusSegments(route) {
@@ -364,6 +459,7 @@ async function enrichBusSegmentRealtime(route, segment) {
       routeId: segment.routeId,
       routeName: segment.name,
       accessMinutes,
+      realtimeMeta: realtimeResponse.meta || null,
     };
   }
 
@@ -379,6 +475,7 @@ async function enrichBusSegmentRealtime(route, segment) {
     routeId: picked.arrival.routeId || segment.routeId,
     routeName: picked.arrival.routeName || segment.name,
     stopName: segment.startStop?.name || null,
+    realtimeMeta: realtimeResponse.meta || null,
   };
 }
 
@@ -430,19 +527,7 @@ export async function searchTransitRoutes(origin, destination, departureTime) {
     throw new Error('VITE_ODSAY_API_KEY가 설정되지 않았습니다.');
   }
 
-  const response = await fetch(buildOdsayUrl(origin, destination), {
-    method: 'GET',
-    mode: 'cors',
-    headers: {
-      Accept: 'application/json',
-    },
-  });
-
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok || payload.error) {
-    throw new Error(payload.error?.[0]?.message || '대중교통 경로 조회에 실패했습니다.');
-  }
+  const payload = await fetchOdsay(buildOdsayUrl(origin, destination));
 
   return {
     routes: normalizeRouteResponse(payload, departureTime),
@@ -475,11 +560,11 @@ export async function refreshRouteRealtime(route, preferredSegmentId = null) {
   const realtimeEntries = await Promise.all(orderedSegments.map(async (segment) => {
     try {
       return await enrichBusSegmentRealtime(route, segment);
-    } catch {
+    } catch (error) {
       return {
         segmentId: segment.id,
         status: 'error',
-        reason: '실시간 조회 실패',
+        reason: error instanceof Error ? error.message : '실시간 조회 실패',
         stopName: segment.startStop?.name || null,
         routeId: segment.routeId,
         routeName: segment.name,
