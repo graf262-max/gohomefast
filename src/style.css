@@ -616,6 +616,14 @@ button {
   color: var(--muted);
 }
 
+.detail-debug {
+  margin-top: 4px;
+  font-size: 0.74rem;
+  color: var(--muted);
+  opacity: 0.82;
+  word-break: break-word;
+}
+
 .segment-helper {
   margin-top: 14px;
   font-size: 0.9rem;

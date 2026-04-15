@@ -700,7 +700,21 @@ function renderDetailEta(route, segment) {
     return `<p class="detail-realtime">${stopName} ${COPY.busArrivalSoon(realtime.waitMinutes)}${leftStation}${warning}</p>`;
   }
 
-  return `<p class="detail-realtime muted">${realtime.reason || COPY.realtimeFallback}</p>`;
+  const meta = realtime.realtimeMeta || {};
+  const attempts = Array.isArray(meta.attempts) ? meta.attempts : [];
+  const lastAttempt = attempts.length ? attempts[attempts.length - 1] : null;
+  const debugBits = [
+    segment.startStop?.stationId ? `stationID ${segment.startStop.stationId}` : '',
+    segment.startStop?.localStationId ? `local ${segment.startStop.localStationId}` : '',
+    segment.startStop?.arsId ? `ars ${segment.startStop.arsId}` : '',
+    segment.routeId ? `routeID ${segment.routeId}` : '',
+    lastAttempt?.source ? `source ${lastAttempt.source}` : '',
+  ].filter(Boolean).join(' · ');
+
+  return `
+    <p class="detail-realtime muted">${realtime.reason || COPY.realtimeFallback}</p>
+    ${debugBits ? `<p class="detail-debug">${debugBits}</p>` : ''}
+  `;
 }
 
 function renderRefreshButton(route) {
