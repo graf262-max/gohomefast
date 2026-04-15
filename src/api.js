@@ -123,6 +123,14 @@ function buildStopQuery(stopName, routeName) {
   return `${stopName} ${routeName}`.trim();
 }
 
+function getFirstStop(stops) {
+  return Array.isArray(stops) && stops.length ? stops[0] : null;
+}
+
+function getLastStop(stops) {
+  return Array.isArray(stops) && stops.length ? stops[stops.length - 1] : null;
+}
+
 function normalizeRouteResponse(data, departureTime) {
   const baseTime = departureTime ? new Date(departureTime) : new Date();
   const paths = data.result?.path || [];
@@ -153,24 +161,26 @@ function normalizeRouteResponse(data, departureTime) {
         const lane = subPath.lane?.[0] || {};
         const routeName = lane.busNo ? String(lane.busNo) : '버스';
         const passStops = extractStops(subPath);
+        const firstPassStop = getFirstStop(passStops);
+        const lastPassStop = getLastStop(passStops);
         const startStop = toStop(
           subPath.startName,
           subPath.startY,
           subPath.startX,
-          getStationId(subPath, 'start'),
+          getStationId(subPath, 'start') || firstPassStop?.stationId || null,
           {
-            localStationId: getLocalStationId(subPath, 'start'),
-            arsId: getArsId(subPath, 'start'),
+            localStationId: getLocalStationId(subPath, 'start') || firstPassStop?.localStationId || null,
+            arsId: getArsId(subPath, 'start') || firstPassStop?.arsId || null,
           },
         );
         const endStop = toStop(
           subPath.endName,
           subPath.endY,
           subPath.endX,
-          getStationId(subPath, 'end'),
+          getStationId(subPath, 'end') || lastPassStop?.stationId || null,
           {
-            localStationId: getLocalStationId(subPath, 'end'),
-            arsId: getArsId(subPath, 'end'),
+            localStationId: getLocalStationId(subPath, 'end') || lastPassStop?.localStationId || null,
+            arsId: getArsId(subPath, 'end') || lastPassStop?.arsId || null,
           },
         );
 
