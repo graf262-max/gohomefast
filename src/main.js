@@ -84,14 +84,14 @@ const COPY = {
   stopFocusReady: '버스 승차·하차 정류장을 지도에 표시했습니다.',
   stopFocusError: '버스 정류장 위치를 찾지 못했습니다. 경로 정보만 확인해 주세요.',
   stopFocusSummary: (segment) => `${segment.name} 승차·하차 정류장 표시 중`,
-  busArrivalSoon: (minutes) => `예상 대기 ${formatMinutesLabel(minutes)}`,
-  realtimeApplied: '배차간격 기준',
+  busArrivalSoon: (minutes) => `버스 ${formatMinutesLabel(minutes)} 뒤 도착`,
+  realtimeApplied: '실시간 반영',
   realtimeFallback: '기본 경로',
   tightConnection: '놓칠 수 있음',
-  refreshingRealtime: '예상 대기 계산 중...',
-  refreshRealtime: '예상 대기 다시 계산',
-  refreshedRealtime: '배차간격 기준으로 다시 계산했습니다.',
-  refreshedRealtimeWithStop: (stopName) => `${stopName} 기준 예상 대기를 다시 계산했습니다.`,
+  refreshingRealtime: '버스 시간 업데이트 중...',
+  refreshRealtime: '버스 시간 새로고침',
+  refreshedRealtime: '실시간 버스 정보를 다시 확인했습니다.',
+  refreshedRealtimeWithStop: (stopName) => `${stopName} 기준 버스 시간을 업데이트했습니다.`,
 };
 
 function createFieldState(helperText) {
@@ -665,10 +665,11 @@ function renderRealtimeMeta(route) {
     return `<span>${COPY.realtimeFallback}</span>`;
   }
 
-  if (['live', 'tight', 'scheduled', 'scheduled-tight'].includes(route.realtime.status)) {
-    const warning = ['tight', 'scheduled-tight'].includes(route.realtime.status) ? ` · ${COPY.tightConnection}` : '';
+  if (route.realtime.status === 'live' || route.realtime.status === 'tight') {
+    const warning = route.realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
+    const leftStation = Number.isFinite(route.realtime.leftStation) ? ` · ${route.realtime.leftStation}정류장 전` : '';
     const stopName = route.realtime.stopName ? `${route.realtime.stopName} 기준` : COPY.realtimeApplied;
-    return `<span>${COPY.busArrivalSoon(route.realtime.waitMinutes)}</span><span>${stopName}${warning}</span>`;
+    return `<span>${COPY.busArrivalSoon(route.realtime.waitMinutes)}</span><span>${stopName}${leftStation}${warning}</span>`;
   }
 
   return `<span>${route.realtime.reason || COPY.realtimeFallback}</span>`;
@@ -681,7 +682,7 @@ function renderSegmentEta(route, segment) {
     return '';
   }
 
-  const warning = ['tight', 'scheduled-tight'].includes(realtime.status) ? ` · ${COPY.tightConnection}` : '';
+  const warning = realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
   return `<small class="segment-eta">${COPY.busArrivalSoon(realtime.waitMinutes)}${warning}</small>`;
 }
 
@@ -692,10 +693,11 @@ function renderDetailEta(route, segment) {
     return '';
   }
 
-  if (['live', 'tight', 'scheduled', 'scheduled-tight'].includes(realtime.status)) {
-    const warning = ['tight', 'scheduled-tight'].includes(realtime.status) ? ` · ${COPY.tightConnection}` : '';
+  if (realtime.status === 'live' || realtime.status === 'tight') {
+    const leftStation = Number.isFinite(realtime.leftStation) ? ` · ${realtime.leftStation}정류장 전` : '';
+    const warning = realtime.status === 'tight' ? ` · ${COPY.tightConnection}` : '';
     const stopName = realtime.stopName ? `${realtime.stopName} 기준` : '승차 정류장 기준';
-    return `<p class="detail-realtime">${stopName} ${COPY.busArrivalSoon(realtime.waitMinutes)}${warning}</p>`;
+    return `<p class="detail-realtime">${stopName} ${COPY.busArrivalSoon(realtime.waitMinutes)}${leftStation}${warning}</p>`;
   }
 
   return `<p class="detail-realtime muted">${realtime.reason || COPY.realtimeFallback}</p>`;

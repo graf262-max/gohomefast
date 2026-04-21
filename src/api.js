@@ -417,50 +417,93 @@ async function fetchOdsay(url) {
   return payload;
 }
 
-function estimateWaitMinutes(segment) {
-  const interval = Number(segment.intervalMinutes);
-  if (!Number.isFinite(interval) || interval <= 0) {
-    return null;
+function uniqueStationIds(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+async function fetchBusRealtime(stop, routeId, routeName) {
+  const stationIds = uniqueStationIds([stop?.stationId, stop?.localStationId, stop?.arsId]);
+
+  if (!stationIds.length || !routeId) {
+    return { arrivals: [] };
   }
 
-  return Math.max(2, Math.ceil(interval / 2));
+  const attempts = [];
+
+  for (const stationId of stationIds) {
+    try {
+      const filtered = await fetchOdsay(buildRealtimeUrl(stationId, routeId));
+      const arrivals = normalizeRealtimeArrivals(filtered);
+      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: true, arrivals });
+      if (arrivals.length) {
+        return { arrivals, meta: { stationId, source: 'realtimeStation', routeFiltered: true, attempts } };
+      }
+    } catch (error) {
+      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: true, error: error instanceof Error ? error.message : '실시간 조회 실패' });
+    }
+
+    try {
+      const unfiltered = await fetchOdsay(buildRealtimeUrl(stationId));
+      const arrivals = filterArrivalsForSegment(normalizeRealtimeArrivals(unfiltered), routeId, routeName);
+      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: false, arrivals });
+      if (arrivals.length) {
+        return { arrivals, meta: { stationId, source: 'realtimeStation', routeFiltered: false, attempts } };
+      }
+    } catch (error) {
+      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: false, error: error instanceof Error ? error.message : '실시간 조회 실패' });
+    }
+
+    try {
+      const stationInfo = await fetchOdsay(buildBusStationInfoUrl(stationId));
+      const arrivals = filterArrivalsForSegment(normalizeRealtimeArrivals(stationInfo), routeId, routeName);
+      attempts.push({ source: 'busStationInfo', stationId, arrivals });
+      if (arrivals.length) {
+        return { arrivals, meta: { stationId, source: 'busStationInfo', routeFiltered: false, attempts } };
+      }
+    } catch (error) {
+      attempts.push({ source: 'busStationInfo', stationId, error: error instanceof Error ? error.message : '정류장 조회 실패' });
+    }
+  }
+
+  return { arrivals: [], meta: { stationId: stationIds[0] || null, source: 'none', attempts } };
 }
 
 function getBusSegments(route) {
-  return route.segments.filter((segment) => segment.type === 'bus');
+  return route.segments.filter((segment) => segment.type === 'bus' && segment.startStop?.stationId && segment.routeId);
 }
 
 async function enrichBusSegmentRealtime(route, segment) {
   const accessMinutes = getAccessMinutesUntilSegment(route, segment.id);
-  const waitMinutes = estimateWaitMinutes(segment);
+  const minimumBufferSec = (accessMinutes + MINIMUM_BOARDING_BUFFER_MINUTES) * 60;
+  const realtimeResponse = await fetchBusRealtime(segment.startStop, segment.routeId, segment.name);
+  const picked = pickBestArrival(realtimeResponse.arrivals, minimumBufferSec);
 
-  if (!Number.isFinite(waitMinutes)) {
+  if (!picked) {
     return {
       segmentId: segment.id,
-      status: 'scheduled-unavailable',
-      reason: '배차간격 정보 없음',
+      status: 'unavailable',
+      reason: '실시간 정보 없음',
       stopName: segment.startStop?.name || null,
       routeId: segment.routeId,
       routeName: segment.name,
       accessMinutes,
+      realtimeMeta: realtimeResponse.meta || null,
     };
   }
 
-  const minimumBufferMinutes = accessMinutes + MINIMUM_BOARDING_BUFFER_MINUTES;
-  const isTightConnection = waitMinutes < minimumBufferMinutes;
-
+  const waitMinutes = Math.ceil(picked.arrival.arrivalSec / 60);
   return {
     segmentId: segment.id,
-    status: isTightConnection ? 'scheduled-tight' : 'scheduled',
+    status: picked.isTightConnection ? 'tight' : 'live',
     waitMinutes,
-    waitSeconds: waitMinutes * 60,
-    leftStation: null,
+    waitSeconds: picked.arrival.arrivalSec,
+    leftStation: Number.isFinite(picked.arrival.leftStation) ? picked.arrival.leftStation : null,
     accessMinutes,
-    missRiskPenaltyMinutes: isTightConnection ? MISS_RISK_PENALTY_MINUTES : 0,
-    routeId: segment.routeId,
-    routeName: segment.name,
+    missRiskPenaltyMinutes: picked.missRiskPenaltyMinutes,
+    routeId: picked.arrival.routeId || segment.routeId,
+    routeName: picked.arrival.routeName || segment.name,
     stopName: segment.startStop?.name || null,
-    intervalMinutes: Number(segment.intervalMinutes) || null,
+    realtimeMeta: realtimeResponse.meta || null,
   };
 }
 
