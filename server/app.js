@@ -1,4 +1,5 @@
 import express from 'express';
+import { XMLParser } from 'fast-xml-parser';
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -301,11 +302,351 @@ function getOdsayErrorMessage(errorPayload) {
   return errorPayload?.message || errorPayload?.msg || null;
 }
 
+const xmlParser = new XMLParser({
+  ignoreAttributes: false,
+  trimValues: true,
+  parseTagValue: true,
+});
+
+function normalizeServiceKey(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  try {
+    return decodeURIComponent(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
+function getSharedPublicBusApiKey() {
+  return normalizeServiceKey(process.env.PUBLIC_DATA_SERVICE_KEY || process.env.BUS_PUBLIC_API_KEY);
+}
+
+function getPublicBusApiKey(...keys) {
+  for (const key of keys) {
+    const value = normalizeServiceKey(process.env[key]);
+    if (value) {
+      return value;
+    }
+  }
+
+  return getSharedPublicBusApiKey();
+}
+
+function hasRealtimeBusApiKey() {
+  return Boolean(process.env.ODSAY_API_KEY || getPublicBusApiKey('SEOUL_BUS_API_KEY', 'GYEONGGI_BUS_API_KEY'));
+}
+
 function uniqueStationIds(values) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
-async function lookupRealtimeArrivals({ stationIds, routeId }) {
+function ensureArray(value) {
+  if (value === undefined || value === null) {
+    return [];
+  }
+
+  return Array.isArray(value) ? value : [value];
+}
+
+function normalizeRouteName(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/번/g, '')
+    .replace(/[^0-9a-z가-힣-]/g, '');
+}
+
+function parsePublicApiPayload(text, responseType = 'json') {
+  const body = String(text || '').trim();
+
+  if (!body) {
+    return {};
+  }
+
+  if (responseType === 'json') {
+    try {
+      return JSON.parse(body);
+    } catch {
+      // Fall back to XML parsing below.
+    }
+  }
+
+  return xmlParser.parse(body);
+}
+
+async function publicApiRequest(baseUrl, params, options = {}) {
+  const { responseType = 'json' } = options;
+  const url = new URL(baseUrl);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.set(key, String(value));
+    }
+  });
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: responseType === 'json' ? 'application/json, text/xml;q=0.9, application/xml;q=0.8' : 'application/xml, text/xml;q=0.9, application/json;q=0.8',
+    },
+    signal: AbortSignal.timeout(10000),
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Public bus API request failed (${response.status})`);
+  }
+
+  return parsePublicApiPayload(text, responseType);
+}
+
+function getPublicApiItems(payload) {
+  return ensureArray(
+    payload?.response?.msgBody?.busArrivalList
+    || payload?.response?.msgBody?.itemList
+    || payload?.response?.body?.items?.item
+    || payload?.ServiceResult?.msgBody?.itemList,
+  );
+}
+
+function getPublicApiErrorMessage(payload) {
+  const headerMessage = payload?.response?.msgHeader?.resultMessage
+    || payload?.response?.msgHeader?.resultMsg
+    || payload?.response?.header?.resultMsg
+    || payload?.ServiceResult?.msgHeader?.headerMsg;
+  const headerCode = payload?.response?.msgHeader?.resultCode
+    || payload?.response?.header?.resultCode
+    || payload?.ServiceResult?.msgHeader?.headerCd;
+
+  if (headerCode !== undefined && headerCode !== null && String(headerCode) !== '0' && String(headerCode).toUpperCase() !== '00') {
+    return headerMessage || 'Regional bus API request failed.';
+  }
+
+  return null;
+}
+
+function toPositiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function parseLeftStationFromMessage(value) {
+  const text = String(value || '');
+  const match = text.match(/(\d+)\s*(?:번째전|정류장\s*전|정거장\s*전)/);
+  return match ? Number(match[1]) : null;
+}
+
+function isMatchingRoute(item, routeId, routeName) {
+  const normalizedTarget = normalizeRouteName(routeName);
+  const itemRouteId = item?.busRouteId || item?.routeId || item?.routeID || item?.ROUTEID || item?.lineId || null;
+
+  if (routeId && String(itemRouteId || '') === String(routeId)) {
+    return true;
+  }
+
+  if (!normalizedTarget) {
+    return false;
+  }
+
+  const routeNames = [
+    item?.rtNm,
+    item?.routeName,
+    item?.routeNm,
+    item?.routeNo,
+    item?.busNo,
+    item?.busRouteNm,
+    item?.lineName,
+    item?.linNo,
+    item?.routeno,
+    item?.ROUTENO,
+  ];
+
+  return routeNames.some((name) => normalizeRouteName(name) === normalizedTarget);
+}
+
+function normalizeSeoulRealtimeArrivals(payload, routeId, routeName) {
+  const items = getPublicApiItems(payload).filter((item) => isMatchingRoute(item, routeId, routeName));
+
+  return items.flatMap((item) => {
+    const base = {
+      routeId: item.busRouteId || routeId || null,
+      routeName: item.rtNm || routeName || null,
+    };
+    const arrivals = [];
+
+    const firstArrivalSec = toPositiveNumber(item.arrmsgSec1);
+    if (firstArrivalSec !== null) {
+      arrivals.push({
+        ...base,
+        arrivalSec: firstArrivalSec,
+        leftStation: toPositiveNumber(item.leftStation1) ?? parseLeftStationFromMessage(item.arrmsg1),
+      });
+    }
+
+    const secondArrivalSec = toPositiveNumber(item.arrmsgSec2);
+    if (secondArrivalSec !== null) {
+      arrivals.push({
+        ...base,
+        arrivalSec: secondArrivalSec,
+        leftStation: toPositiveNumber(item.leftStation2) ?? parseLeftStationFromMessage(item.arrmsg2),
+      });
+    }
+
+    return arrivals;
+  }).sort((a, b) => a.arrivalSec - b.arrivalSec);
+}
+
+function normalizeGyeonggiRealtimeArrivals(payload, routeName) {
+  const items = getPublicApiItems(payload).filter((item) => isMatchingRoute(item, '', routeName));
+
+  return items.flatMap((item) => {
+    const base = {
+      routeId: item.routeId || item.ROUTEID || null,
+      routeName: item.routeName || item.routeNm || item.routeNo || item.linNo || routeName || null,
+    };
+    const arrivals = [];
+
+    const firstMinutes = toPositiveNumber(item.predictTime1);
+    if (firstMinutes !== null) {
+      arrivals.push({
+        ...base,
+        arrivalSec: firstMinutes * 60,
+        leftStation: toPositiveNumber(item.locationNo1),
+      });
+    }
+
+    const secondMinutes = toPositiveNumber(item.predictTime2);
+    if (secondMinutes !== null) {
+      arrivals.push({
+        ...base,
+        arrivalSec: secondMinutes * 60,
+        leftStation: toPositiveNumber(item.locationNo2),
+      });
+    }
+
+    return arrivals;
+  }).sort((a, b) => a.arrivalSec - b.arrivalSec);
+}
+
+async function lookupSeoulRealtimeArrivals({ stationId, routeId, routeName }) {
+  const serviceKey = getPublicBusApiKey('SEOUL_BUS_API_KEY');
+  if (!serviceKey || !stationId) {
+    return { arrivals: [], meta: { source: 'seoulBusApi', stationId, skipped: true } };
+  }
+
+  const payload = await publicApiRequest(
+    'https://ws.bus.go.kr/api/rest/arrive/getLowArrInfoByStId',
+    {
+      serviceKey,
+      stId: stationId,
+      resultType: 'json',
+    },
+    { responseType: 'xml' },
+  );
+
+  return {
+    arrivals: normalizeSeoulRealtimeArrivals(payload, routeId, routeName),
+    meta: {
+      source: 'seoulBusApi',
+      stationId,
+      routeFiltered: Boolean(routeId || routeName),
+      error: getPublicApiErrorMessage(payload),
+    },
+  };
+}
+
+async function lookupGyeonggiRealtimeArrivals({ stationId, routeName }) {
+  const serviceKey = getPublicBusApiKey('GYEONGGI_BUS_API_KEY');
+  if (!serviceKey || !stationId) {
+    return { arrivals: [], meta: { source: 'gyeonggiBusApi', stationId, skipped: true } };
+  }
+
+  const payload = await publicApiRequest(
+    'https://apis.data.go.kr/6410000/busarrivalservice/v2/getBusArrivalListv2',
+    {
+      serviceKey,
+      stationId,
+      format: 'json',
+    },
+    { responseType: 'json' },
+  );
+
+  return {
+    arrivals: normalizeGyeonggiRealtimeArrivals(payload, routeName),
+    meta: {
+      source: 'gyeonggiBusApi',
+      stationId,
+      routeFiltered: Boolean(routeName),
+      error: getPublicApiErrorMessage(payload),
+    },
+  };
+}
+
+async function lookupRegionalRealtimeArrivals({ stationId, localStationId, routeId, routeName }) {
+  const attempts = [];
+  const providerPlans = [
+    {
+      source: 'gyeonggiBusApi',
+      stationIds: uniqueStationIds([localStationId, stationId]),
+      lookup: (candidateId) => lookupGyeonggiRealtimeArrivals({ stationId: candidateId, routeName }),
+    },
+    {
+      source: 'seoulBusApi',
+      stationIds: uniqueStationIds([stationId]),
+      lookup: (candidateId) => lookupSeoulRealtimeArrivals({ stationId: candidateId, routeId, routeName }),
+    },
+  ];
+
+  for (const provider of providerPlans) {
+    for (const candidateId of provider.stationIds) {
+      try {
+        const result = await provider.lookup(candidateId);
+        if (result.meta?.skipped) {
+          continue;
+        }
+
+        attempts.push({
+          source: provider.source,
+          stationId: candidateId,
+          routeFiltered: Boolean(routeId || routeName),
+          count: result.arrivals.length,
+          error: result.meta?.error || null,
+        });
+
+        if (result.arrivals.length) {
+          return {
+            arrivals: result.arrivals,
+            meta: {
+              ...result.meta,
+              attempts,
+            },
+          };
+        }
+      } catch (error) {
+        attempts.push({
+          source: provider.source,
+          stationId: candidateId,
+          routeFiltered: Boolean(routeId || routeName),
+          error: error instanceof Error ? error.message : 'Regional bus lookup failed.',
+        });
+      }
+    }
+  }
+
+  return {
+    arrivals: [],
+    meta: {
+      source: 'none',
+      stationId: localStationId || stationId || null,
+      attempts,
+    },
+  };
+}
+
+async function lookupOdsayRealtimeArrivals({ stationIds, routeId, routeName }) {
   const attempts = [];
 
   for (const stationId of stationIds) {
@@ -390,6 +731,36 @@ async function lookupRealtimeArrivals({ stationIds, routeId }) {
   }
 
   return { arrivals: [], meta: { source: 'none', stationId: stationIds[0] || null, routeFiltered: Boolean(routeId), attempts } };
+}
+
+async function lookupRealtimeArrivals({ stationId, localStationId, arsId, routeId, routeName }) {
+  const regionalRealtime = await lookupRegionalRealtimeArrivals({
+    stationId,
+    localStationId,
+    routeId,
+    routeName,
+  });
+
+  if (regionalRealtime.arrivals.length || !process.env.ODSAY_API_KEY) {
+    return regionalRealtime;
+  }
+
+  const odsayRealtime = await lookupOdsayRealtimeArrivals({
+    stationIds: uniqueStationIds([stationId, localStationId, arsId]),
+    routeId,
+    routeName,
+  });
+
+  return {
+    arrivals: odsayRealtime.arrivals,
+    meta: {
+      ...odsayRealtime.meta,
+      attempts: [
+        ...(regionalRealtime.meta?.attempts || []),
+        ...(odsayRealtime.meta?.attempts || []),
+      ],
+    },
+  };
 }
 
 export function createApp() {
@@ -517,6 +888,7 @@ export function createApp() {
     const localStationId = String(request.query.localStationId || '').trim();
     const arsId = String(request.query.arsId || '').trim();
     const routeId = String(request.query.routeId || '').trim();
+    const routeName = String(request.query.routeName || '').trim();
 
     const stationIds = uniqueStationIds([stationId, localStationId, arsId]);
 
@@ -526,7 +898,7 @@ export function createApp() {
     }
 
     try {
-      if (!process.env.ODSAY_API_KEY) {
+      if (!hasRealtimeBusApiKey()) {
         if (isProduction) {
           response.status(503).json({ message: 'Realtime bus API key is not configured.' });
           return;
@@ -552,7 +924,13 @@ export function createApp() {
         return;
       }
 
-      const realtime = await lookupRealtimeArrivals({ stationIds, routeId });
+      const realtime = await lookupRealtimeArrivals({
+        stationId,
+        localStationId,
+        arsId,
+        routeId,
+        routeName,
+      });
 
       response.json({
         arrivals: realtime.arrivals,

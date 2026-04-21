@@ -63,6 +63,28 @@ function buildBusStationInfoUrl(stationId) {
   return url;
 }
 
+function buildBusRealtimeProxyUrl(stop, routeId, routeName) {
+  const params = new URLSearchParams();
+
+  if (stop?.stationId) {
+    params.set('stationId', String(stop.stationId));
+  }
+  if (stop?.localStationId) {
+    params.set('localStationId', String(stop.localStationId));
+  }
+  if (stop?.arsId) {
+    params.set('arsId', String(stop.arsId));
+  }
+  if (routeId) {
+    params.set('routeId', String(routeId));
+  }
+  if (routeName) {
+    params.set('routeName', String(routeName));
+  }
+
+  return `/api/bus/realtime?${params.toString()}`;
+}
+
 function extractStops(subPath) {
   return subPath.passStopList?.stations?.map((station) => ({
     name: station.stationName,
@@ -456,52 +478,48 @@ async function fetchBusRealtime(stop, routeId, routeName) {
     stopCandidates.flatMap((candidate) => [candidate?.stationId, candidate?.localStationId, candidate?.arsId]),
   );
 
-  if (!stationIds.length || !routeId) {
+  if (!stationIds.length || (!routeId && !routeName)) {
     return { arrivals: [] };
   }
 
   const attempts = [];
 
-  for (const stationId of stationIds) {
+  for (const stopCandidate of stopCandidates) {
     try {
-      const filtered = await fetchOdsay(buildRealtimeUrl(stationId, routeId));
-      const arrivals = normalizeRealtimeArrivals(filtered);
-      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: true, arrivals });
+      const payload = await fetchJson(buildBusRealtimeProxyUrl(stopCandidate, routeId, routeName));
+      const arrivals = filterArrivalsForSegment(payload.arrivals || [], routeId, routeName);
+      const stationId = stopCandidate?.stationId || stopCandidate?.localStationId || stopCandidate?.arsId || null;
+      attempts.push(...(payload.meta?.attempts || [{ source: payload.meta?.source || 'serverRealtime', stationId, routeFiltered: true, count: arrivals.length }]));
       if (arrivals.length) {
-        return { arrivals, meta: { stationId, source: 'realtimeStation', routeFiltered: true, attempts } };
+        return {
+          arrivals,
+          meta: {
+            ...(payload.meta || {}),
+            stationId: payload.meta?.stationId || stationId,
+            attempts,
+          },
+        };
       }
     } catch (error) {
-      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: true, error: error instanceof Error ? error.message : '실시간 조회 실패' });
-    }
-
-    try {
-      const unfiltered = await fetchOdsay(buildRealtimeUrl(stationId));
-      const arrivals = filterArrivalsForSegment(normalizeRealtimeArrivals(unfiltered), routeId, routeName);
-      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: false, arrivals });
-      if (arrivals.length) {
-        return { arrivals, meta: { stationId, source: 'realtimeStation', routeFiltered: false, attempts } };
-      }
-    } catch (error) {
-      attempts.push({ source: 'realtimeStation', stationId, routeFiltered: false, error: error instanceof Error ? error.message : '실시간 조회 실패' });
-    }
-
-    try {
-      const stationInfo = await fetchOdsay(buildBusStationInfoUrl(stationId));
-      const arrivals = filterArrivalsForSegment(normalizeRealtimeArrivals(stationInfo), routeId, routeName);
-      attempts.push({ source: 'busStationInfo', stationId, arrivals });
-      if (arrivals.length) {
-        return { arrivals, meta: { stationId, source: 'busStationInfo', routeFiltered: false, attempts } };
-      }
-    } catch (error) {
-      attempts.push({ source: 'busStationInfo', stationId, error: error instanceof Error ? error.message : '정류장 조회 실패' });
+      attempts.push({
+        source: 'serverRealtime',
+        stationId: stopCandidate?.stationId || stopCandidate?.localStationId || stopCandidate?.arsId || null,
+        routeFiltered: Boolean(routeId || routeName),
+        error: error instanceof Error ? error.message : '실시간 조회 실패',
+      });
     }
   }
 
   return { arrivals: [], meta: { stationId: stationIds[0] || null, source: 'none', attempts } };
 }
 
+function hasRealtimeStopIds(segment) {
+  const stops = segment?.realtimeStopCandidates?.length ? segment.realtimeStopCandidates : [segment?.startStop];
+  return stops.some((stop) => stop?.stationId || stop?.localStationId || stop?.arsId);
+}
+
 function getBusSegments(route) {
-  return route.segments.filter((segment) => segment.type === 'bus' && segment.startStop?.stationId && segment.routeId);
+  return route.segments.filter((segment) => segment.type === 'bus' && hasRealtimeStopIds(segment) && (segment.routeId || segment.name));
 }
 
 async function enrichBusSegmentRealtime(route, segment) {

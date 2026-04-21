@@ -657,7 +657,14 @@ function getSegmentRealtime(route, segment) {
 }
 
 function hasRealtimeRefresh(route) {
-  return route?.segments?.some((segment) => segment.type === 'bus' && segment.startStop?.stationId && segment.routeId);
+  return route?.segments?.some((segment) => {
+    if (segment.type !== 'bus' || (!segment.routeId && !segment.name)) {
+      return false;
+    }
+
+    const stops = segment.realtimeStopCandidates?.length ? segment.realtimeStopCandidates : [segment.startStop];
+    return stops.some((stop) => stop?.stationId || stop?.localStationId || stop?.arsId);
+  });
 }
 
 function renderRealtimeMeta(route) {
