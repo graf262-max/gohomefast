@@ -131,6 +131,33 @@ function getLastStop(stops) {
   return Array.isArray(stops) && stops.length ? stops[stops.length - 1] : null;
 }
 
+function buildRealtimeStopCandidates(startName, startStop, passStops) {
+  const candidates = [];
+
+  if (startStop) {
+    candidates.push(startStop);
+  }
+
+  const matchingPassStops = (passStops || []).filter((stop) => {
+    const stopName = String(stop?.name || '').trim();
+    const targetName = String(startName || '').trim();
+    return stopName && targetName && (stopName === targetName || stopName.includes(targetName) || targetName.includes(stopName));
+  });
+
+  candidates.push(...matchingPassStops);
+  candidates.push(...(passStops || []).slice(0, 3));
+
+  const seen = new Set();
+  return candidates.filter((stop) => {
+    const key = [stop?.stationId, stop?.localStationId, stop?.arsId, stop?.name].map((value) => String(value || '')).join('|');
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 function normalizeRouteResponse(data, departureTime) {
   const baseTime = departureTime ? new Date(departureTime) : new Date();
   const paths = data.result?.path || [];
@@ -195,6 +222,7 @@ function normalizeRouteResponse(data, departureTime) {
           intervalMinutes: Number(lane.intervalTime ?? subPath.intervalTime) || null,
           startStop,
           endStop,
+          realtimeStopCandidates: buildRealtimeStopCandidates(subPath.startName, startStop, passStops),
           stops: passStops,
           stopSearchHints: {
             start: buildStopQuery(subPath.startName, routeName),
@@ -423,7 +451,10 @@ function uniqueStationIds(values) {
 }
 
 async function fetchBusRealtime(stop, routeId, routeName) {
-  const stationIds = uniqueStationIds([stop?.stationId, stop?.localStationId, stop?.arsId]);
+  const stopCandidates = Array.isArray(stop) ? stop : [stop];
+  const stationIds = uniqueStationIds(
+    stopCandidates.flatMap((candidate) => [candidate?.stationId, candidate?.localStationId, candidate?.arsId]),
+  );
 
   if (!stationIds.length || !routeId) {
     return { arrivals: [] };
@@ -476,7 +507,11 @@ function getBusSegments(route) {
 async function enrichBusSegmentRealtime(route, segment) {
   const accessMinutes = getAccessMinutesUntilSegment(route, segment.id);
   const minimumBufferSec = (accessMinutes + MINIMUM_BOARDING_BUFFER_MINUTES) * 60;
-  const realtimeResponse = await fetchBusRealtime(segment.startStop, segment.routeId, segment.name);
+  const realtimeResponse = await fetchBusRealtime(
+    segment.realtimeStopCandidates?.length ? segment.realtimeStopCandidates : segment.startStop,
+    segment.routeId,
+    segment.name,
+  );
   const picked = pickBestArrival(realtimeResponse.arrivals, minimumBufferSec);
 
   if (!picked) {
