@@ -1,4 +1,4 @@
-const ODSAY_API_KEY = import.meta.env.VITE_ODSAY_API_KEY || '';
+﻿const ODSAY_API_KEY = import.meta.env.VITE_ODSAY_API_KEY || '';
 const STATIC_WAIT_BASELINE_MINUTES = 4;
 const MINIMUM_BOARDING_BUFFER_MINUTES = 2;
 const MISS_RISK_PENALTY_MINUTES = 7;
@@ -360,11 +360,12 @@ function normalizeRealtimeCandidates(arrivals) {
 
 function normalizeRouteName(value) {
   return String(value || '')
+    .trim()
+    .toLowerCase()
     .replace(/\s+/g, '')
     .replace(/번/g, '')
-    .toLowerCase();
+    .replace(/[^0-9a-z가-힣-]/g, '');
 }
-
 function filterArrivalsForSegment(arrivals, routeId, routeName) {
   const normalizedName = normalizeRouteName(routeName);
   const byRouteId = (arrivals || []).filter((arrival) => String(arrival.routeId || '') === String(routeId));
